@@ -23,7 +23,7 @@ struct segment {
 	enum seg_kind kind;
 	const char *text; /* PLAIN/STOP literal bytes (arena) */
 	size_t len;
-	char spec[40]; /* printf spec for a directive, e.g. "%-20s" */
+	const char *spec; /* printf spec for a directive (arena, sized to fit) */
 	char dirc;     /* directive char */
 	char aux;      /* aux char for A/B/C/T strftime code */
 	enum arg_type argtype;
@@ -309,19 +309,28 @@ struct fmt *fmt_compile(const char *format, struct arena *a, const char **errmsg
 				*errmsg = "format error: % at end of format string";
 				return NULL;
 			}
-			/* parse flags/width/precision */
-			char spec[40];
+			/* Measure the flags/width/precision span, then allocate a
+			 * spec buffer sized to fit it (find allocates its segment
+			 * buffer the same way). No fixed cap, so pathological widths
+			 * like %99999999999p can't overflow; they reach snprintf
+			 * verbatim, exactly as find hands them to its printf. */
+			const char *fp = p;
+			while (*fp == '-' || *fp == '+' || *fp == ' ' || *fp == '#' || *fp == '0')
+				fp++;
+			while (*fp >= '0' && *fp <= '9')
+				fp++;
+			if (*fp == '.') {
+				fp++;
+				while (*fp >= '0' && *fp <= '9')
+					fp++;
+			}
+			size_t fwlen = (size_t)(fp - p); /* flags+width+precision */
+			char *spec = arena_alloc(a, fwlen + 3); /* '%' + span + conv + NUL */
 			size_t si = 0;
 			spec[si++] = '%';
-			while (*p == '-' || *p == '+' || *p == ' ' || *p == '#' || *p == '0')
-				spec[si++] = *p++;
-			while (*p >= '0' && *p <= '9')
-				spec[si++] = *p++;
-			if (*p == '.') {
-				spec[si++] = *p++;
-				while (*p >= '0' && *p <= '9')
-					spec[si++] = *p++;
-			}
+			memcpy(spec + si, p, fwlen);
+			si += fwlen;
+			p = fp;
 			char dirc = *p++;
 			char aux = 0;
 			if (dirc == 'A' || dirc == 'B' || dirc == 'C' || dirc == 'T') {
@@ -336,7 +345,7 @@ struct fmt *fmt_compile(const char *format, struct arena *a, const char **errmsg
 			s->dirc = dirc;
 			s->aux = aux;
 			s->argtype = dir_argtype(dirc);
-			memcpy(s->spec, spec, si + 1);
+			s->spec = spec;
 			if (dir_needs_stat(dirc))
 				f->needs_stat = 1;
 			continue;
