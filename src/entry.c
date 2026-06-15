@@ -1,0 +1,26 @@
+#include "entry.h"
+
+#include <string.h>
+
+struct entry *entry_new(struct arena *a, const char *name, size_t namelen,
+			enum frt_type type)
+{
+	struct entry *e = arena_alloc(a, sizeof *e + namelen + 1);
+	e->namelen = (uint32_t)namelen;
+	e->type = (uint16_t)type;
+	e->ltype = FRT_UNKNOWN;
+	e->flags = 0;
+	e->_pad = 0;
+	e->depth = 0;
+	e->stat_errno = 0;
+	e->ino = 0;
+	e->dev = 0;
+	e->st = NULL;
+	e->lnk = NULL;
+	e->path = NULL;
+	e->pathlen = 0;
+	e->basepos = 0;
+	memcpy(e->name, name, namelen);
+	e->name[namelen] = '\0';
+	return e;
+}

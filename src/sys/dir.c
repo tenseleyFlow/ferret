@@ -1,0 +1,230 @@
+#include "sys/dir.h"
+#include "util.h"
+#include "config.h"
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#if defined(FRT_DIR_BACKEND_getdents64)
+#include <sys/syscall.h>
+#endif
+
+#define DIRBUF (64u * 1024u)
+
+struct frt_dir {
+	int fd;
+#if defined(FRT_DIR_BACKEND_readdir)
+	DIR *dp;
+#else
+	size_t pos;  /* cursor within buf */
+	size_t size; /* valid bytes in buf */
+	int eof;
+	/* dirent records hold 8-byte ino fields; the buffer (and thus each
+	 * kernel-aligned record) must be suitably aligned. */
+	_Alignas(max_align_t) char buf[DIRBUF];
+#endif
+};
+
+#if defined(FRT_DIR_BACKEND_getdents64)
+/* Linux: raw getdents64 + linux_dirent64 (avoids the readdir(3) per-entry copy). */
+struct linux_dirent64 {
+	unsigned long long d_ino;
+	long long d_off;
+	unsigned short d_reclen;
+	unsigned char d_type;
+	char d_name[];
+};
+static ssize_t sys_getdents(int fd, void *buf, size_t n)
+{
+	return syscall(SYS_getdents64, fd, buf, n);
+}
+#endif
+
+/* Unused only on the readdir backend without d_type (rare); keep it warning-free
+ * there without a backend-specific guard. */
+__attribute__((unused)) static enum frt_type type_from_dt(unsigned dt)
+{
+	switch (dt) {
+	case DT_DIR:  return FRT_DIR;
+	case DT_REG:  return FRT_REG;
+	case DT_LNK:  return FRT_LNK;
+	case DT_FIFO: return FRT_FIFO;
+	case DT_SOCK: return FRT_SOCK;
+	case DT_CHR:  return FRT_CHR;
+	case DT_BLK:  return FRT_BLK;
+#ifdef DT_WHT
+	case DT_WHT:  return FRT_WHT;
+#endif
+	default:      return FRT_UNKNOWN;
+	}
+}
+
+static int is_dotdir(const char *n)
+{
+	return n[0] == '.' && (n[1] == '\0' || (n[1] == '.' && n[2] == '\0'));
+}
+
+static struct frt_dir *dir_from_fd(int fd)
+{
+	struct frt_dir *d = frt_xmalloc(sizeof *d);
+	d->fd = fd;
+#if defined(FRT_DIR_BACKEND_readdir)
+	d->dp = fdopendir(fd);
+	if (!d->dp) {
+		int e = errno;
+		close(fd);
+		free(d);
+		errno = e;
+		return NULL;
+	}
+#else
+	d->pos = d->size = 0;
+	d->eof = 0;
+#endif
+	return d;
+}
+
+int frt_diropen(const char *path, struct frt_dir **out)
+{
+	int fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	struct frt_dir *d = dir_from_fd(fd);
+	if (!d)
+		return -1;
+	*out = d;
+	return 0;
+}
+
+int frt_diropen_at(int parent_fd, const char *name, struct frt_dir **out)
+{
+	int fd = openat(parent_fd, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	struct frt_dir *d = dir_from_fd(fd);
+	if (!d)
+		return -1;
+	*out = d;
+	return 0;
+}
+
+int frt_dirfd(const struct frt_dir *d)
+{
+	return d->fd;
+}
+
+void frt_dirclose(struct frt_dir *d)
+{
+	if (!d)
+		return;
+#if defined(FRT_DIR_BACKEND_readdir)
+	closedir(d->dp); /* also closes fd */
+#else
+	close(d->fd);
+#endif
+	free(d);
+}
+
+#if defined(FRT_DIR_BACKEND_readdir)
+
+int frt_dirread(struct frt_dir *d, struct frt_dirent *e)
+{
+	for (;;) {
+		errno = 0;
+		struct dirent *de = readdir(d->dp);
+		if (!de)
+			return errno ? -1 : 0;
+		if (is_dotdir(de->d_name))
+			continue;
+#if FRT_HAS_D_TYPE
+		e->type = type_from_dt(de->d_type);
+#else
+		e->type = FRT_UNKNOWN;
+#endif
+		e->name = de->d_name;
+		e->ino = (unsigned long long)de->d_ino;
+#ifdef _DIRENT_HAVE_D_NAMLEN
+		e->namelen = de->d_namlen; /* free on BSD/macOS */
+#else
+		e->namelen = strlen(de->d_name);
+#endif
+		return 1;
+	}
+}
+
+#else /* getdents64 / getdirentries: read into a big buffer, walk records */
+
+static int refill(struct frt_dir *d)
+{
+	if (d->eof)
+		return 0;
+	ssize_t r;
+#if defined(FRT_DIR_BACKEND_getdents64)
+	r = sys_getdents(d->fd, d->buf, sizeof d->buf);
+#else
+	long base;
+	r = getdirentries(d->fd, d->buf, sizeof d->buf, &base);
+#endif
+	if (r < 0)
+		return -1;
+	if (r == 0) {
+		d->eof = 1;
+		return 0;
+	}
+	d->pos = 0;
+	d->size = (size_t)r;
+	return 1;
+}
+
+int frt_dirread(struct frt_dir *d, struct frt_dirent *e)
+{
+	for (;;) {
+		if (d->pos >= d->size) {
+			int rc = refill(d);
+			if (rc <= 0)
+				return rc; /* 0 eof, -1 err */
+			continue;
+		}
+#if defined(FRT_DIR_BACKEND_getdents64)
+		struct linux_dirent64 *de = (void *)(d->buf + d->pos);
+		if (de->d_reclen == 0) { /* defensive: a 0-length record would spin forever
+					  * (corrupt 9p/FUSE/overlay) */
+			d->pos = d->size;
+			continue;
+		}
+		d->pos += de->d_reclen;
+		if (de->d_ino == 0 || is_dotdir(de->d_name))
+			continue;
+		e->type = type_from_dt(de->d_type);
+		e->name = de->d_name;
+		e->ino = de->d_ino;
+		e->namelen = strlen(de->d_name); /* linux_dirent64 has no d_namlen */
+#else
+		struct dirent *de = (void *)(d->buf + d->pos);
+		if (de->d_reclen == 0) { /* defensive: avoid infinite loop */
+			d->pos = d->size;
+			continue;
+		}
+		d->pos += de->d_reclen;
+		if (de->d_fileno == 0 || is_dotdir(de->d_name))
+			continue;
+		e->type = type_from_dt(de->d_type);
+		e->name = de->d_name;
+		e->ino = (unsigned long long)de->d_fileno;
+#ifdef _DIRENT_HAVE_D_NAMLEN
+		e->namelen = de->d_namlen; /* free on BSD/macOS getdirentries */
+#else
+		e->namelen = strlen(de->d_name);
+#endif
+#endif
+		return 1;
+	}
+}
+
+#endif
