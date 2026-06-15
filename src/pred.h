@@ -27,4 +27,8 @@ bool pred_samefile(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 bool pred_perm(const struct expr *e, struct entry *ent, struct evalctx *ctx);
 bool pred_access(const struct expr *e, struct entry *ent, struct evalctx *ctx);
 
+/* Time predicates: -atime -amin -ctime -cmin -mtime -mmin, the -newer family,
+ * and -newerXY. The reference timestamp/kind/window are precomputed by the parser. */
+bool pred_time(const struct expr *e, struct entry *ent, struct evalctx *ctx);
+
 #endif /* FRT_PRED_H */

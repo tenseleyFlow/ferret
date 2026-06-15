@@ -34,11 +34,15 @@ enum pred_id {
 	PRED_PRUNE, PRED_OPTION,
 	PRED_SIZE, PRED_LINKS, PRED_INUM, PRED_UID, PRED_GID,
 	PRED_NOUSER, PRED_NOGROUP, PRED_SAMEFILE, PRED_PERM, PRED_ACCESS,
+	PRED_TIME,
 	ACT_PRINT, ACT_PRINT0,
 };
 
 /* Numeric comparison form for +N / -N / N arguments. */
 enum comp_kind { COMP_GT, COMP_LT, COMP_EQ };
+
+/* Which file timestamp a time predicate inspects. */
+enum time_field { TF_ATIME, TF_MTIME, TF_CTIME, TF_BTIME };
 
 /* -perm match modes. */
 enum perm_match { PERM_EXACT, PERM_ALL, PERM_ANY };
@@ -63,6 +67,13 @@ struct expr {
 		struct { int match; unsigned mode; } perm;                /* -perm */
 		struct { dev_t dev; ino_t ino; } samefile;                /* -samefile */
 		struct { int amode; } access;                             /* R_OK/W_OK/X_OK */
+		struct {
+			int kind;          /* COMP_GT/LT/EQ (already sense-inverted) */
+			int field;         /* enum time_field: which file time */
+			long long ref_sec; /* reference timestamp (computed at parse) */
+			long ref_nsec;
+			long window;       /* EQ window in seconds (DAYSECS or 60); 0 for -newer */
+		} time;
 	} u;
 };
 

@@ -9,7 +9,10 @@
 #include <pwd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
+
+#define DAYSECS 86400
 
 /* bfs cost constants (audit 03, decided). */
 #define COST_FAST 40.0f
@@ -28,6 +31,11 @@ struct pstate {
 	const char *error;     /* set on failure */
 	const char *error_arg; /* offending token, if any */
 	bool has_action;       /* any action seen => suppress implicit -print */
+	/* time origin (find: start_time; cur_day_start defaults to start-DAYSECS,
+	 * -daystart floors it to local midnight; positional — affects later tests). */
+	struct timespec start_time;
+	struct timespec cur_day_start;
+	int full_days; /* -daystart already applied */
 };
 
 static char *cur(struct pstate *ps)
@@ -270,6 +278,118 @@ static int parse_mode_str(const char *s, unsigned *out)
 			p++;
 	}
 	*out = mode & 07777u;
+	return 0;
+}
+
+/* -daystart: floor cur_day_start to local midnight today (find/parser.c). Only
+ * the first occurrence has effect; positional (affects later time tests only). */
+static void apply_daystart(struct pstate *ps)
+{
+	if (ps->full_days)
+		return;
+	ps->cur_day_start.tv_sec += DAYSECS; /* from start-DAYSECS back to start */
+	ps->cur_day_start.tv_nsec = 0;
+	time_t t = (time_t)ps->cur_day_start.tv_sec;
+	struct tm *lt = localtime(&t);
+	if (lt)
+		ps->cur_day_start.tv_sec -=
+			lt->tm_sec + lt->tm_min * 60 + lt->tm_hour * 3600;
+	else
+		ps->cur_day_start.tv_sec -= ps->cur_day_start.tv_sec % DAYSECS;
+	ps->full_days = 1;
+}
+
+/* Build a relative time predicate (-atime/-mtime/... and -amin/-mmin/...).
+ * `unit` is DAYSECS or 60. Mirrors find's parse_time / do_parse_xmin +
+ * get_relative_timestamp exactly (audit 01, sense inversion, -N day fudge). */
+static struct expr *build_time_pred(struct pstate *ps, struct expr *e, int field, int unit,
+				    const char *arg)
+{
+	if (!arg) {
+		ps->error = "missing argument to time predicate";
+		return NULL;
+	}
+	struct timespec origin = ps->cur_day_start;
+	const char *p = arg;
+	int comp = COMP_EQ;
+	if (*p == '+') {
+		comp = COMP_GT;
+		p++;
+	} else if (*p == '-') {
+		comp = COMP_LT;
+		p++;
+	}
+	if (unit == DAYSECS) {
+		if (comp == COMP_LT) /* -N: end-of-day fudge */
+			origin.tv_sec += DAYSECS - 1;
+	} else {
+		origin.tv_sec += DAYSECS; /* minutes measure from "now" */
+	}
+
+	char *end;
+	double offset = strtod(p, &end);
+	/* reject empty/trailing junk, negatives, NaN (!(>=0)), and inf/huge. */
+	if (end == p || *end != '\0' || !(offset >= 0.0) || offset > 1.0e18) {
+		ps->error = "non-numeric argument";
+		ps->error_arg = arg;
+		return NULL;
+	}
+	int kind = comp == COMP_LT ? COMP_GT : comp == COMP_GT ? COMP_LT : COMP_EQ;
+
+	/* split offset*unit into whole seconds + fractional ns (modf, truncating
+	 * toward zero — offset is non-negative). Avoids libm. */
+	double total = offset * (double)unit;
+	long long secs_d = (long long)total;
+	double frac = total - (double)secs_d;
+	long nanosec = (long)(frac * 1.0e9);
+	long long rsec = (long long)origin.tv_sec - secs_d;
+	long rnsec = (long)origin.tv_nsec - nanosec;
+	if (rnsec < 0) {
+		rnsec += 1000000000L;
+		rsec -= 1;
+	}
+
+	e->pred = PRED_TIME;
+	e->eval = pred_time;
+	e->needs_stat = true;
+	e->u.time.kind = kind;
+	e->u.time.field = field;
+	e->u.time.ref_sec = rsec;
+	e->u.time.ref_nsec = rnsec;
+	e->u.time.window = unit;
+	e->cost = COST_STAT;
+	e->prob = 0.5f;
+	return e;
+}
+
+/* Parse a date for -newerXt / -newermt. Subset of find's parse_datetime:
+ * @EPOCH, "YYYY-MM-DD[ HH:MM:SS]" in local time. Returns 0/-1. */
+static int parse_datetime_basic(const char *s, long long *sec, long *nsec)
+{
+	*nsec = 0;
+	if (s[0] == '@') {
+		char *end;
+		long long v = strtoll(s + 1, &end, 10);
+		if (end == s + 1 || *end != '\0')
+			return -1;
+		*sec = v;
+		return 0;
+	}
+	struct tm tm;
+	memset(&tm, 0, sizeof tm);
+	tm.tm_isdst = -1;
+	char *r = strptime(s, "%Y-%m-%d %H:%M:%S", &tm);
+	if (!r || *r) {
+		memset(&tm, 0, sizeof tm);
+		tm.tm_isdst = -1;
+		r = strptime(s, "%Y-%m-%d", &tm);
+		if (!r || *r)
+			return -1;
+	}
+	time_t t = mktime(&tm);
+	if (t == (time_t)-1)
+		return -1;
+	*sec = t;
 	return 0;
 }
 
@@ -520,6 +640,110 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->prob = name[1] == 'r' ? 0.99f : name[1] == 'w' ? 0.8f : 0.2f;
 		return e;
 	}
+	if (strcmp(name, "-atime") == 0 || strcmp(name, "-ctime") == 0 ||
+	    strcmp(name, "-mtime") == 0) {
+		int field = name[1] == 'a' ? TF_ATIME : name[1] == 'c' ? TF_CTIME : TF_MTIME;
+		const char *arg = cur(ps);
+		struct expr *r = build_time_pred(ps, e, field, DAYSECS, arg);
+		if (r)
+			advance(ps);
+		return r;
+	}
+	if (strcmp(name, "-amin") == 0 || strcmp(name, "-cmin") == 0 ||
+	    strcmp(name, "-mmin") == 0) {
+		int field = name[1] == 'a' ? TF_ATIME : name[1] == 'c' ? TF_CTIME : TF_MTIME;
+		const char *arg = cur(ps);
+		struct expr *r = build_time_pred(ps, e, field, 60, arg);
+		if (r)
+			advance(ps);
+		return r;
+	}
+	if (strcmp(name, "-newer") == 0 || strcmp(name, "-anewer") == 0 ||
+	    strcmp(name, "-cnewer") == 0) {
+		const char *arg = cur(ps);
+		if (!arg) {
+			ps->error = "missing argument";
+			ps->error_arg = name;
+			return NULL;
+		}
+		advance(ps);
+		struct frt_statinfo si;
+		if (frt_stat_at(AT_FDCWD, arg, ps->opts->follow != 0, &si) != 0) {
+			ps->error = "cannot stat reference file";
+			ps->error_arg = arg;
+			return NULL;
+		}
+		int field = name[1] == 'n' ? TF_MTIME : name[1] == 'a' ? TF_ATIME : TF_CTIME;
+		e->pred = PRED_TIME;
+		e->eval = pred_time;
+		e->needs_stat = true;
+		e->u.time.kind = COMP_GT;
+		e->u.time.field = field;
+		e->u.time.ref_sec = si.mtime;
+		e->u.time.ref_nsec = si.mtime_ns;
+		e->u.time.window = 0;
+		e->cost = COST_STAT;
+		e->prob = 0.5f;
+		return e;
+	}
+	if (strncmp(name, "-newer", 6) == 0 && strlen(name) == 8) {
+		char X = name[6], Y = name[7];
+		int xf = X == 'a' ? TF_ATIME : X == 'c' ? TF_CTIME : X == 'm' ? TF_MTIME
+			 : X == 'B' ? TF_BTIME : -1;
+		if (xf < 0 || strchr("aBcmt", Y) == NULL) {
+			ps->error = "invalid -newerXY reference type";
+			ps->error_arg = name;
+			return NULL;
+		}
+		const char *arg = cur(ps);
+		if (!arg) {
+			ps->error = "missing argument";
+			ps->error_arg = name;
+			return NULL;
+		}
+		advance(ps);
+		long long rsec;
+		long rnsec = 0;
+		if (Y == 't') {
+			if (parse_datetime_basic(arg, &rsec, &rnsec) != 0) {
+				ps->error = "invalid date/time argument";
+				ps->error_arg = arg;
+				return NULL;
+			}
+		} else {
+			struct frt_statinfo si;
+			if (frt_stat_at(AT_FDCWD, arg, ps->opts->follow != 0, &si) != 0) {
+				ps->error = "cannot stat reference file";
+				ps->error_arg = arg;
+				return NULL;
+			}
+			switch (Y) {
+			case 'a': rsec = si.atime; rnsec = si.atime_ns; break;
+			case 'c': rsec = si.ctime; rnsec = si.ctime_ns; break;
+			case 'm': rsec = si.mtime; rnsec = si.mtime_ns; break;
+			default: /* 'B' */
+				if (!si.have_btime) {
+					ps->error = "reference file has no birth time";
+					ps->error_arg = arg;
+					return NULL;
+				}
+				rsec = si.btime;
+				rnsec = si.btime_ns;
+				break;
+			}
+		}
+		e->pred = PRED_TIME;
+		e->eval = pred_time;
+		e->needs_stat = true;
+		e->u.time.kind = COMP_GT;
+		e->u.time.field = xf;
+		e->u.time.ref_sec = rsec;
+		e->u.time.ref_nsec = rnsec;
+		e->u.time.window = 0;
+		e->cost = COST_STAT;
+		e->prob = 0.5f;
+		return e;
+	}
 	if (strcmp(name, "-true") == 0) {
 		e->pred = PRED_TRUE;
 		e->eval = pred_true;
@@ -562,6 +786,10 @@ static struct expr *parse_predicate(struct pstate *ps)
 	}
 	if (strcmp(name, "-noleaf") == 0) {
 		ps->opts->noleaf = 1;
+		return mk_option_leaf(ps);
+	}
+	if (strcmp(name, "-daystart") == 0) {
+		apply_daystart(ps);
 		return mk_option_leaf(ps);
 	}
 	if (strcmp(name, "-follow") == 0) {
@@ -798,7 +1026,12 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 		.error = NULL,
 		.error_arg = NULL,
 		.has_action = false,
+		.full_days = 0,
 	};
+	/* find captures start_time once; cur_day_start defaults to a day earlier. */
+	clock_gettime(CLOCK_REALTIME, &ps.start_time);
+	ps.cur_day_start.tv_sec = ps.start_time.tv_sec - DAYSECS;
+	ps.cur_day_start.tv_nsec = ps.start_time.tv_nsec;
 
 	struct expr *expr = NULL;
 	if (ps.i < ps.argc) {

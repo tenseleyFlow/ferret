@@ -6,6 +6,7 @@
 #include <grp.h>
 #include <pwd.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 bool pred_name(const struct expr *e, struct entry *ent, struct evalctx *ctx)
@@ -170,4 +171,48 @@ bool pred_access(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	(void)ent;
 	/* -readable/-writable/-executable: effective-id access check, fd-relative. */
 	return faccessat(ctx->dirfd, ctx->statname, e->u.access.amode, AT_EACCESS) == 0;
+}
+
+/* compare_ts: replicate find's exact timespec comparison (find/pred.c). */
+static int ts_cmp(long long s1, long n1, long long s2, long n2)
+{
+	if (s1 == s2 && n1 == n2)
+		return 0;
+	double diff = difftime((time_t)s1, (time_t)s2) + 1.0e-9 * (double)(n1 - n2);
+	return diff < 0.0 ? -1 : 1;
+}
+
+bool pred_time(const struct expr *e, struct entry *ent, struct evalctx *ctx)
+{
+	const struct frt_statinfo *st = entry_stat(ent, ctx);
+	if (!st)
+		return false;
+
+	long long fsec;
+	long fnsec;
+	switch (e->u.time.field) {
+	case TF_ATIME: fsec = st->atime; fnsec = st->atime_ns; break;
+	case TF_CTIME: fsec = st->ctime; fnsec = st->ctime_ns; break;
+	case TF_BTIME:
+		if (!st->have_btime)
+			return false;
+		fsec = st->btime;
+		fnsec = st->btime_ns;
+		break;
+	default:       fsec = st->mtime; fnsec = st->mtime_ns; break;
+	}
+
+	long long rsec = e->u.time.ref_sec;
+	long rnsec = e->u.time.ref_nsec;
+	switch (e->u.time.kind) {
+	case COMP_GT:
+		return ts_cmp(fsec, fnsec, rsec, rnsec) > 0;
+	case COMP_LT:
+		return ts_cmp(fsec, fnsec, rsec, rnsec) < 0;
+	default: { /* COMP_EQ: a half-open window (reftime, reftime+window] */
+		double delta = difftime((time_t)fsec, (time_t)rsec) +
+			       1.0e-9 * (double)(fnsec - rnsec);
+		return delta > 0.0 && delta <= (double)e->u.time.window;
+	}
+	}
 }
