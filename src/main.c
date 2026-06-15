@@ -33,8 +33,6 @@ static void report_parse_error(const struct parse_result *pr)
 	const char *e = pr->error, *a = pr->error_arg;
 	if (strcmp(e, "unknown predicate") == 0 && a)
 		fprintf(stderr, "ferret: unknown predicate `%s'\n", a);
-	else if (strcmp(e, "unknown argument to -type") == 0 && a)
-		fprintf(stderr, "ferret: Unknown argument to -type: %s\n", a);
 	else if (strcmp(e, "invalid -size type") == 0 && a)
 		fprintf(stderr, "ferret: invalid -size type `%s'\n", a);
 	else if (strcmp(e, "invalid mode") == 0 && a)

@@ -12,6 +12,8 @@
 #include <grp.h>
 #include <limits.h>
 #include <pwd.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -89,27 +91,71 @@ static bool tok_is(const char *t, const char *a, const char *b)
 	return t && (strcmp(t, a) == 0 || (b && strcmp(t, b) == 0));
 }
 
-static int parse_type_list(const char *arg, unsigned *mask_out)
+/* Format a parse error into the arena and stash it on ps. find builds several
+ * of its messages inline with the predicate name, so they can't go through a
+ * fixed key table. */
+static void set_errorf(struct pstate *ps, const char *fmt, ...)
 {
-	unsigned mask = 0;
-	for (const char *p = arg; *p; p++) {
-		switch (*p) {
-		case 'b': mask |= 1u << FRT_BLK; break;
-		case 'c': mask |= 1u << FRT_CHR; break;
-		case 'd': mask |= 1u << FRT_DIR; break;
-		case 'p': mask |= 1u << FRT_FIFO; break;
-		case 'f': mask |= 1u << FRT_REG; break;
-		case 'l': mask |= 1u << FRT_LNK; break;
-		case 's': mask |= 1u << FRT_SOCK; break;
-		case ',': continue; /* list separator */
-		default: return -1;
-		}
-		/* after a type letter, the only valid follower is ',' or end */
-		if (p[1] && p[1] != ',')
-			return -1;
-	}
-	if (mask == 0)
+	char buf[256];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof buf, fmt, ap);
+	va_end(ap);
+	ps->error = arena_strdup(ps->arena, buf);
+	ps->error_arg = NULL;
+}
+
+/* Parse a -type/-xtype comma list, matching find's grammar and its five
+ * distinct diagnostics (insert_type). `pred` is "-type" or "-xtype" and is
+ * spliced into the message. On error sets ps->error and returns -1. */
+static int parse_type_list(struct pstate *ps, const char *pred, const char *arg,
+			   unsigned *mask_out)
+{
+	if (!*arg) {
+		set_errorf(ps, "Arguments to %s should contain at least one letter", pred);
 		return -1;
+	}
+	unsigned mask = 0;
+	const char *p = arg;
+	for (;;) {
+		unsigned bit;
+		switch (*p) {
+		case 'b': bit = FRT_BLK; break;
+		case 'c': bit = FRT_CHR; break;
+		case 'd': bit = FRT_DIR; break;
+		case 'f': bit = FRT_REG; break;
+		case 'l': bit = FRT_LNK; break;
+		case 'p': bit = FRT_FIFO; break;
+		case 's': bit = FRT_SOCK; break;
+		case 'D': /* Solaris door: a known letter, unsupported here */
+			set_errorf(ps, "%s %c is not supported because Solaris doors "
+				       "are not supported on the platform find was "
+				       "compiled on.", pred, *p);
+			return -1;
+		default:
+			set_errorf(ps, "Unknown argument to %s: %c", pred, *p);
+			return -1;
+		}
+		if (mask & (1u << bit)) {
+			set_errorf(ps, "Duplicate file type '%c' in the argument list to %s.",
+				   *p, pred);
+			return -1;
+		}
+		mask |= 1u << bit;
+		p++;
+		if (!*p)
+			break;
+		if (*p != ',') {
+			set_errorf(ps, "Must separate multiple arguments to %s using: ','", pred);
+			return -1;
+		}
+		p++;
+		if (!*p) {
+			set_errorf(ps, "Last file type in list argument to %s is missing, "
+				       "i.e., list is ending on: ','", pred);
+			return -1;
+		}
+	}
 	*mask_out = mask;
 	return 0;
 }
@@ -527,11 +573,8 @@ static struct expr *parse_predicate(struct pstate *ps)
 		}
 		advance(ps);
 		unsigned mask;
-		if (parse_type_list(arg, &mask) != 0) {
-			ps->error = "unknown argument to -type";
-			ps->error_arg = arg;
+		if (parse_type_list(ps, "-type", arg, &mask) != 0)
 			return NULL;
-		}
 		e->pred = PRED_TYPE;
 		e->eval = pred_type;
 		e->u.type.mask = mask;
@@ -587,11 +630,8 @@ static struct expr *parse_predicate(struct pstate *ps)
 			return NULL;
 		}
 		unsigned mask;
-		if (parse_type_list(arg, &mask) != 0) {
-			ps->error = "unknown argument to -type";
-			ps->error_arg = arg;
+		if (parse_type_list(ps, "-xtype", arg, &mask) != 0)
 			return NULL;
-		}
 		advance(ps);
 		e->pred = PRED_XTYPE;
 		e->eval = pred_xtype;
