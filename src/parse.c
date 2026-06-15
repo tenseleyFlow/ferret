@@ -5,6 +5,7 @@
 #include "fmt.h"
 #include "glob.h"
 #include "outfile.h"
+#include "xregex.h"
 #include "sys/xstat.h"
 
 #include <fcntl.h>
@@ -535,6 +536,112 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->cost = 2 * COST_STAT;
 		e->prob = 0.01f;
 		return e;
+	}
+	if (strcmp(name, "-path") == 0 || strcmp(name, "-wholename") == 0 ||
+	    strcmp(name, "-ipath") == 0 || strcmp(name, "-iwholename") == 0) {
+		const char *arg = cur(ps);
+		if (!arg) {
+			ps->error = "missing argument";
+			ps->error_arg = name;
+			return NULL;
+		}
+		advance(ps);
+		e->pred = PRED_PATH;
+		e->eval = pred_path;
+		e->u.name.pattern = arena_strdup(ps->arena, arg);
+		e->u.name.glob_flags = name[1] == 'i' ? FRT_GLOB_CASEFOLD : 0;
+		e->cost = COST_FNMATCH;
+		e->prob = 0.5f;
+		return e;
+	}
+	if (strcmp(name, "-lname") == 0 || strcmp(name, "-ilname") == 0) {
+		const char *arg = cur(ps);
+		if (!arg) {
+			ps->error = "missing argument";
+			ps->error_arg = name;
+			return NULL;
+		}
+		advance(ps);
+		e->pred = PRED_LNAME;
+		e->eval = pred_lname;
+		e->u.name.pattern = arena_strdup(ps->arena, arg);
+		e->u.name.glob_flags = name[1] == 'i' ? FRT_GLOB_CASEFOLD : 0;
+		e->cost = COST_FNMATCH;
+		e->prob = 0.5f;
+		return e;
+	}
+	if (strcmp(name, "-xtype") == 0) {
+		const char *arg = cur(ps);
+		if (!arg) {
+			ps->error = "missing argument to -xtype";
+			return NULL;
+		}
+		unsigned mask;
+		if (parse_type_list(arg, &mask) != 0) {
+			ps->error = "unknown argument to -type";
+			ps->error_arg = arg;
+			return NULL;
+		}
+		advance(ps);
+		e->pred = PRED_XTYPE;
+		e->eval = pred_xtype;
+		e->u.type.mask = mask;
+		e->needs_stat = true;
+		e->cost = COST_STAT;
+		e->prob = 0.5f;
+		return e;
+	}
+	if (strcmp(name, "-fstype") == 0) {
+		const char *arg = cur(ps);
+		if (!arg) {
+			ps->error = "missing argument to -fstype";
+			return NULL;
+		}
+		advance(ps);
+		e->pred = PRED_FSTYPE;
+		e->eval = pred_fstype;
+		e->u.fstype = arena_strdup(ps->arena, arg);
+		e->cost = COST_STAT;
+		e->prob = 0.5f;
+		return e;
+	}
+	if (strcmp(name, "-regex") == 0 || strcmp(name, "-iregex") == 0) {
+		const char *arg = cur(ps);
+		if (!arg) {
+			ps->error = "missing argument";
+			ps->error_arg = name;
+			return NULL;
+		}
+		advance(ps);
+		const char *rerr = NULL;
+		struct frt_regex *re = frt_regex_compile(
+			arg, ps->opts->regextype, name[1] == 'i', ps->arena, &rerr);
+		if (!re) {
+			ps->error = rerr ? rerr : "invalid regular expression";
+			return NULL;
+		}
+		e->pred = PRED_REGEX;
+		e->eval = pred_regex;
+		e->u.regex = re;
+		e->cost = COST_FNMATCH;
+		e->prob = 0.5f;
+		return e;
+	}
+	if (strcmp(name, "-regextype") == 0) {
+		const char *arg = cur(ps);
+		if (!arg) {
+			ps->error = "missing argument to -regextype";
+			return NULL;
+		}
+		int rt = frt_regextype_from_name(arg);
+		if (rt < 0) {
+			ps->error = "unknown regular expression type";
+			ps->error_arg = arg;
+			return NULL;
+		}
+		advance(ps);
+		ps->opts->regextype = rt;
+		return mk_option_leaf(ps);
 	}
 	if (strcmp(name, "-size") == 0) {
 		const char *arg = cur(ps);

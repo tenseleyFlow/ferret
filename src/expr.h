@@ -17,8 +17,9 @@
 
 struct expr;
 struct evalctx;
-struct fmt;     /* fmt.h */
-struct outfile; /* outfile.h */
+struct fmt;       /* fmt.h */
+struct outfile;   /* outfile.h */
+struct frt_regex; /* regex.h */
 
 typedef bool (*eval_fn)(const struct expr *e, struct entry *ent, struct evalctx *ctx);
 
@@ -36,7 +37,7 @@ enum pred_id {
 	PRED_PRUNE, PRED_OPTION,
 	PRED_SIZE, PRED_LINKS, PRED_INUM, PRED_UID, PRED_GID,
 	PRED_NOUSER, PRED_NOGROUP, PRED_SAMEFILE, PRED_PERM, PRED_ACCESS,
-	PRED_TIME,
+	PRED_TIME, PRED_PATH, PRED_LNAME, PRED_XTYPE, PRED_FSTYPE, PRED_REGEX,
 	ACT_PRINT, ACT_PRINT0, ACT_EXEC, ACT_DELETE, ACT_QUIT, ACT_PRINTF, ACT_LS,
 };
 
@@ -89,6 +90,8 @@ struct expr {
 			struct outfile *dest; /* -f* destination file; NULL = stdout */
 			int zero;             /* -print0/-fprint0 NUL terminator */
 		} pf;
+		struct frt_regex *regex;  /* -regex/-iregex compiled pattern */
+		const char *fstype;       /* -fstype requested type name */
 	} u;
 };
 

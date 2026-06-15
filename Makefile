@@ -47,9 +47,11 @@ SRC = \
 	src/outfile.c \
 	src/parse.c \
 	src/pred.c \
+	src/xregex.c \
 	src/util.c \
 	src/walk.c \
 	src/sys/dir.c \
+	src/sys/fs.c \
 	src/sys/xstat.c
 OBJ = $(SRC:.c=.o)
 DEP = $(OBJ:.o=.d)

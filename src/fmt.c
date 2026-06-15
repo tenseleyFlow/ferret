@@ -4,6 +4,7 @@
 #include "outfile.h"
 #include "util.h"
 #include "sys/xstat.h"
+#include "sys/fs.h"
 
 #include <fcntl.h>
 #include <grp.h>
@@ -567,7 +568,7 @@ static void render_dir(const struct segment *s, struct entry *ent, struct evalct
 		break;
 	}
 	case 'F':
-		emit_spec_str(out, s->spec, "?"); /* fstype: sprint 08 */
+		emit_spec_str(out, s->spec, frt_fstype(ctx->dirfd, ctx->statname));
 		break;
 	case 'Z':
 		emit_spec_str(out, s->spec, ""); /* SELinux: deferred */

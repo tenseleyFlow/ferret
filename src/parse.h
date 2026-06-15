@@ -20,6 +20,7 @@ struct options {
 	int noleaf;               /* -noleaf: disable leaf optimization (no-op for now) */
 	int ignore_readdir_race;  /* -ignore_readdir_race */
 	int warn;                 /* -warn / -nowarn (default off when non-interactive) */
+	int regextype;            /* -regextype: enum frt_regextype (default emacs) */
 };
 
 struct parse_result {

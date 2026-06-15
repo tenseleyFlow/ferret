@@ -1,10 +1,16 @@
 #include "pred.h"
 #include "glob.h"
+#include "xregex.h"
+#include "diag.h"
 #include "sys/dir.h"
+#include "sys/xstat.h"
+#include "sys/fs.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
 #include <pwd.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -180,6 +186,58 @@ static int ts_cmp(long long s1, long n1, long long s2, long n2)
 		return 0;
 	double diff = difftime((time_t)s1, (time_t)s2) + 1.0e-9 * (double)(n1 - n2);
 	return diff < 0.0 ? -1 : 1;
+}
+
+bool pred_path(const struct expr *e, struct entry *ent, struct evalctx *ctx)
+{
+	(void)ctx;
+	/* -path/-ipath glob the whole path; '*' crosses '/'. */
+	return frt_glob_match(e->u.name.pattern, ent->path, e->u.name.glob_flags);
+}
+
+bool pred_lname(const struct expr *e, struct entry *ent, struct evalctx *ctx)
+{
+	(void)ent;
+	/* -lname/-ilname: glob the symlink target. Only matches actual symlinks. */
+	char link[4096];
+	ssize_t r = readlinkat(ctx->dirfd, ctx->statname, link, sizeof link - 1);
+	if (r < 0)
+		return false;
+	link[r] = '\0';
+	return frt_glob_match(e->u.name.pattern, link, e->u.name.glob_flags);
+}
+
+bool pred_xtype(const struct expr *e, struct entry *ent, struct evalctx *ctx)
+{
+	/* -xtype: stat with the opposite follow-sense of the mode. Default -P (and
+	 * -H descended) follows the target; -L stats the link itself. */
+	int xfollow = (ctx->follow != 1);
+	struct frt_statinfo si;
+	if (frt_stat_at(ctx->dirfd, ctx->statname, xfollow, &si) != 0) {
+		if (xfollow && (errno == ENOENT || errno == ELOOP || errno == ENOTDIR)) {
+			/* broken link: fall back to the link's own type (like ls -lL). */
+			if (ent->type == FRT_UNKNOWN)
+				entry_stat(ent, ctx);
+			return (e->u.type.mask & (1u << ent->type)) != 0;
+		}
+		frt_diag_errno("", ent->path, errno);
+		*ctx->exit_status = 1;
+		return false;
+	}
+	enum frt_type t = frt_type_from_mode(si.mode);
+	return (e->u.type.mask & (1u << t)) != 0;
+}
+
+bool pred_fstype(const struct expr *e, struct entry *ent, struct evalctx *ctx)
+{
+	(void)ent;
+	return strcmp(frt_fstype(ctx->dirfd, ctx->statname), e->u.fstype) == 0;
+}
+
+bool pred_regex(const struct expr *e, struct entry *ent, struct evalctx *ctx)
+{
+	(void)ctx;
+	return frt_regex_match(e->u.regex, ent->path, ent->pathlen);
 }
 
 bool pred_time(const struct expr *e, struct entry *ent, struct evalctx *ctx)
