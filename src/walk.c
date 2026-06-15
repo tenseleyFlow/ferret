@@ -4,6 +4,7 @@
 #include "util.h"
 #include "diag.h"
 #include "exec.h"
+#include "pool.h"
 #include "sys/dir.h"
 #include "sys/xstat.h"
 
@@ -30,6 +31,8 @@ struct walkenv {
 	struct ancestor *anc; /* -L: (dev,ino) of directories on the current path */
 	int nanc, anccap;
 	int dir_seq;       /* monotonic directory-instance counter (-execdir +) */
+	struct frt_pool *pool; /* parallel stat pool (NULL = serial) */
+	int needs_stat;    /* expression can trigger a stat (gates the pool) */
 };
 
 static void report_error(struct walkenv *we, const char *path, int err)
@@ -211,51 +214,121 @@ static void process_entry(struct walkenv *we, struct entry *ent, int dirfd, cons
 	}
 }
 
-static void walk_children(struct walkenv *we, struct frt_dir *d, int depth)
+/* Push the entry's name onto the path buffer, evaluate (and recurse), pop. */
+static void process_one(struct walkenv *we, struct entry *ent, int dirfd, int depth, int my_id)
 {
-	int dirfd = frt_dirfd(d);
-	int my_id = ++we->dir_seq; /* unique id for this directory instance */
+	size_t oldlen = we->path.len;
+	if (we->path.len == 0 || we->path.data[we->path.len - 1] != '/')
+		dstr_appendc(&we->path, '/');
+	size_t basepos = we->path.len;
+	dstr_append(&we->path, ent->name, ent->namelen);
+
+	ent->path = we->path.data;
+	ent->pathlen = (uint32_t)we->path.len;
+	ent->basepos = (uint32_t)basepos;
+
+	we->ctx.dirfd = dirfd;
+	we->ctx.dir_id = my_id;
+	we->ctx.statname = ent->name;
+
+	process_entry(we, ent, dirfd, ent->name, depth, my_id);
+
+	dstr_truncate(&we->path, oldlen);
+}
+
+/* Pool job: stat ents[i] into the pre-allocated slots[i] (workers touch disjoint
+ * indices; fstatat on a shared dir fd is stateless — no locking). */
+struct statjob {
+	struct entry **ents;
+	struct frt_statinfo *slots;
+	int dirfd;
+	int follow;
+};
+
+static void stat_worker(void *arg, size_t i)
+{
+	struct statjob *j = arg;
+	frt_entry_fill_stat(j->ents[i], j->dirfd, j->ents[i]->name, j->follow, &j->slots[i]);
+}
+
+/* Serial (default): stream entries, lazy stat, per-entry arena rewind. */
+static void walk_children_serial(struct walkenv *we, struct frt_dir *d, int dirfd, int depth,
+				 int my_id)
+{
 	struct frt_dirent de;
 	int r;
-
 	while ((r = frt_dirread(d, &de)) == 1) {
 		struct arena_marker mark = arena_mark(&we->arena);
-
 		struct entry *ent = entry_new(&we->arena, de.name, de.namelen, de.type);
 		ent->depth = depth;
 		ent->ino = de.ino;
-
-		size_t oldlen = we->path.len;
-		if (we->path.len == 0 || we->path.data[we->path.len - 1] != '/')
-			dstr_appendc(&we->path, '/');
-		size_t basepos = we->path.len;
-		dstr_append(&we->path, de.name, de.namelen);
-
-		ent->path = we->path.data;
-		ent->pathlen = (uint32_t)we->path.len;
-		ent->basepos = (uint32_t)basepos;
-
-		we->ctx.dirfd = dirfd;
-		we->ctx.dir_id = my_id;
-		we->ctx.statname = ent->name;
-
-		process_entry(we, ent, dirfd, de.name, depth, my_id);
-
-		dstr_truncate(&we->path, oldlen);
+		process_one(we, ent, dirfd, depth, my_id);
 		arena_rewind(&we->arena, mark);
-
 		if (we->ctx.quit)
 			break;
 	}
 	if (r < 0)
 		report_error(we, we->path.data, errno);
+}
+
+/* Parallel (-P, stat-heavy, --ferret-threads): collect the directory's entries,
+ * stat them on the pool, then evaluate/recurse in readdir order. Output order is
+ * unchanged — only the stat work is parallel. Over-stats entries a cheap
+ * predicate might have short-circuited, which is invisible (the result is the
+ * same); engaged only when the user opts in. */
+static void walk_children_parallel(struct walkenv *we, struct frt_dir *d, int dirfd, int depth,
+				   int my_id)
+{
+	struct arena_marker mark = arena_mark(&we->arena);
+	struct entry **ents = NULL;
+	size_t cap = 0, n = 0;
+	struct frt_dirent de;
+	int r;
+	while ((r = frt_dirread(d, &de)) == 1) {
+		struct entry *ent = entry_new(&we->arena, de.name, de.namelen, de.type);
+		ent->depth = depth;
+		ent->ino = de.ino;
+		if (n == cap) {
+			cap = cap ? cap * 2 : 128;
+			ents = frt_xrealloc(ents, cap * sizeof *ents);
+		}
+		ents[n++] = ent;
+	}
+	if (r < 0)
+		report_error(we, we->path.data, errno);
+
+	if (n > 0) {
+		struct frt_statinfo *slots = arena_alloc(&we->arena, n * sizeof *slots);
+		struct statjob job = {ents, slots, dirfd, we->ctx.follow == 1};
+		frt_pool_for(we->pool, n, stat_worker, &job);
+	}
+	for (size_t i = 0; i < n; i++) {
+		process_one(we, ents[i], dirfd, depth, my_id);
+		if (we->ctx.quit)
+			break;
+	}
+	free(ents);
+	arena_rewind(&we->arena, mark);
+}
+
+static void walk_children(struct walkenv *we, struct frt_dir *d, int depth)
+{
+	int dirfd = frt_dirfd(d);
+	int my_id = ++we->dir_seq; /* unique id for this directory instance */
+
+	if (we->pool && we->needs_stat && we->ctx.follow == 0)
+		walk_children_parallel(we, d, dirfd, depth, my_id);
+	else
+		walk_children_serial(we, d, dirfd, depth, my_id);
+
 	/* flush this directory's -execdir '+' batch before its fd closes. */
 	we->ctx.dirfd = dirfd;
 	frt_exec_flush_tree(we->expr, 1, my_id, &we->ctx);
 }
 
 int frt_walk(const char *root, const struct options *opts, const struct expr *expr,
-	     struct dstr *out, int out_fd, int *exit_status)
+	     struct frt_pool *pool, int needs_stat, struct dstr *out, int out_fd,
+	     int *exit_status)
 {
 	struct walkenv we;
 	we.opts = opts;
@@ -265,6 +338,8 @@ int frt_walk(const char *root, const struct options *opts, const struct expr *ex
 	we.anc = NULL;
 	we.nanc = we.anccap = 0;
 	we.dir_seq = 0;
+	we.pool = pool;
+	we.needs_stat = needs_stat;
 
 	we.ctx.follow = opts->follow;
 	we.ctx.dir_id = 0;

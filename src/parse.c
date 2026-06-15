@@ -1279,6 +1279,7 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 	out->opts.optlevel = 3;
 	out->opts.maxdepth = -1;
 	out->opts.mindepth = 0;
+	out->opts.threads = 1; /* serial by default; --ferret-threads opts into the pool */
 
 	int i = 1;
 
@@ -1298,6 +1299,12 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 			   a[3] == '\0') {
 			out->opts.optlevel = a[2] - '0';
 			i++;
+		} else if (strcmp(a, "--ferret-threads") == 0 && i + 1 < argc) {
+			/* ferret extension (kept out of --help): worker count for the
+			 * parallel stat pass. 0 = auto (CPU count), 1 = serial. */
+			int v = parse_nonneg(argv[i + 1]);
+			out->opts.threads = (v < 0) ? 1 : v;
+			i += 2;
 		} else if (strcmp(a, "-D") == 0 && i + 1 < argc) {
 			const char *d = argv[i + 1];
 			/* comma-separated debug words; we honor tree/opt/all, accept

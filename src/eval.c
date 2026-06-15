@@ -32,6 +32,35 @@ bool eval_expr(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	return false; /* unreachable */
 }
 
+/* Fill `ent`'s metadata into the pre-allocated `slot` (no allocation — safe to
+ * call from a pool worker, one entry per worker). Sets the STATTED/FAILED flag. */
+void frt_entry_fill_stat(struct entry *ent, int dirfd, const char *statname, int follow,
+			 struct frt_statinfo *slot)
+{
+	if (frt_stat_at(dirfd, statname, follow, slot) < 0) {
+		ent->flags |= ENT_STAT_FAILED;
+		ent->stat_errno = errno;
+		return;
+	}
+	ent->st = slot;
+	ent->flags |= ENT_STATTED;
+	/* Under -L the followed (target) type is what predicates see — a symlink's
+	 * own type is irrelevant, so refine even when d_type already gave LNK. */
+	if (follow || ent->type == FRT_UNKNOWN)
+		ent->type = (uint16_t)frt_type_from_mode(slot->mode);
+	ent->ino = slot->ino;
+	ent->dev = slot->dev;
+}
+
+int frt_expr_needs_stat(const struct expr *e)
+{
+	if (!e)
+		return 0;
+	if (e->kind == EXPR_LEAF)
+		return e->needs_stat;
+	return frt_expr_needs_stat(e->lhs) || frt_expr_needs_stat(e->rhs);
+}
+
 const struct frt_statinfo *entry_stat(struct entry *ent, struct evalctx *ctx)
 {
 	if (ent->flags & ENT_STATTED)
@@ -40,19 +69,6 @@ const struct frt_statinfo *entry_stat(struct entry *ent, struct evalctx *ctx)
 		return NULL;
 
 	struct frt_statinfo *si = arena_alloc(ctx->arena, sizeof *si);
-	int follow = ctx->follow == 1; /* -L follows; -H/-P do not for descended entries */
-	if (frt_stat_at(ctx->dirfd, ctx->statname, follow, si) < 0) {
-		ent->flags |= ENT_STAT_FAILED;
-		ent->stat_errno = errno;
-		return NULL;
-	}
-	ent->st = si;
-	ent->flags |= ENT_STATTED;
-	/* Under -L the followed (target) type is what predicates see — a symlink's
-	 * own type is irrelevant, so refine even when d_type already gave LNK. */
-	if (follow || ent->type == FRT_UNKNOWN)
-		ent->type = (uint16_t)frt_type_from_mode(si->mode);
-	ent->ino = si->ino;
-	ent->dev = si->dev;
-	return si;
+	frt_entry_fill_stat(ent, ctx->dirfd, ctx->statname, ctx->follow == 1, si);
+	return (ent->flags & ENT_STATTED) ? ent->st : NULL;
 }

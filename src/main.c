@@ -7,11 +7,14 @@
 #include "diag.h"
 #include "outfile.h"
 #include "opt.h"
+#include "pool.h"
+#include "eval.h"
 #include "arena.h"
 #include "dstr.h"
 
 #include <locale.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void print_version(void)
@@ -78,13 +81,28 @@ int main(int argc, char **argv)
 	if (pr.opts.debug & FRT_DBG_OPT)
 		frt_expr_dump(pr.expr, "opt");
 
+	/* parallel stat pool (ferret extension): only when stat-heavy and opted in.
+	 * FRT_IO=uring requests the io_uring statx backend; until that lands it
+	 * falls back to the worker pool (silently, so output is unaffected). */
+	int needs_stat = frt_expr_needs_stat(pr.expr);
+	int threads = pr.opts.threads;
+	const char *io = getenv("FRT_IO");
+	if (io && strcmp(io, "uring") == 0 && threads == 1)
+		threads = 0; /* engage parallel stat (pool fallback) */
+	if (threads == 0)
+		threads = frt_pool_default_workers();
+	struct frt_pool *pool = (threads > 1 && needs_stat) ? frt_pool_create(threads) : NULL;
+
 	struct dstr out;
 	dstr_init(&out);
 	int exit_status = 0;
 
 	for (int i = 0; i < pr.npaths; i++)
-		if (frt_walk(pr.paths[i], &pr.opts, pr.expr, &out, 1, &exit_status))
+		if (frt_walk(pr.paths[i], &pr.opts, pr.expr, pool, needs_stat, &out, 1,
+			     &exit_status))
 			break; /* -quit */
+
+	frt_pool_destroy(pool);
 
 	/* run any pending -exec ... + batches accumulated across all roots */
 	frt_exec_flush_pending(pr.expr, &out, 1, &exit_status);

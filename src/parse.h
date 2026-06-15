@@ -22,6 +22,7 @@ struct options {
 	int warn;                 /* -warn / -nowarn (default off when non-interactive) */
 	int regextype;            /* -regextype: enum frt_regextype (default emacs) */
 	unsigned debug;           /* -D bits: FRT_DBG_* */
+	int threads;              /* --ferret-threads: 1=serial (default), 0=auto, N */
 };
 
 enum {

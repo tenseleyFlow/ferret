@@ -47,6 +47,7 @@ SRC = \
 	src/opt.c \
 	src/outfile.c \
 	src/parse.c \
+	src/pool.c \
 	src/pred.c \
 	src/xregex.c \
 	src/util.c \
