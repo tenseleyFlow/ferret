@@ -32,6 +32,10 @@ UUT="$work/ferret.uut"
 corpus="$work/corpus"
 sh tests/golden/mkcorpus.sh "$corpus" >/dev/null
 
+# argv recorder for -exec/-execdir/-ok cases (%R expands to it).
+recorder="$root/tests/golden/recordargs.sh"
+chmod +x "$recorder" 2>/dev/null || true
+
 # Case matrix. %C expands to the corpus root. Cases grow per sprint (sprint 02+).
 # Sprint 02 surface: -name/-iname/-type/-empty/-print/-print0, operators, implicit print.
 CASES='
@@ -113,6 +117,16 @@ CASES='
 %C -newermt @1000000000
 %C -newermm %C/old2020.txt
 %C -daystart -mtime +30
+%C -type f -exec %R {} ;
+%C -type f -exec %R {} +
+%C -type f -execdir %R {} ;
+%C -type f -execdir %R {} +
+%C -name *.c -exec %R pre {} post ;
+%C -type f -exec %R {} ; -print
+%C -name *.c -exec false ; -o -print
+%C -quit
+%C -print -quit
+%C -name b1.dat -quit
 '
 
 # The reference binary is named find-<tag>, so it self-reports that as its program
@@ -127,7 +141,7 @@ me_gid=$(id -g)
 # run_case <binary> <case-string> -> writes o.out/o.err/o.rc in $work
 run_case() {
 	_bin=$1; _case=$2
-	_expanded=$(printf '%s' "$_case" | sed "s#%C#$corpus#g; s#%U#$me_uid#g; s#%G#$me_gid#g")
+	_expanded=$(printf '%s' "$_case" | sed "s#%C#$corpus#g; s#%U#$me_uid#g; s#%G#$me_gid#g; s#%R#$recorder#g")
 	# shellcheck disable=SC2086
 	set -- $_expanded
 	"$_bin" "$@" >"$work/o.out" 2>"$work/o.err"
@@ -157,6 +171,54 @@ phase() {
 	done
 }
 
+# -ok reads y/n from stdin (can't go through the generic matrix). Pipe an
+# alternating answer stream; compare stdout + normalized stderr + rc.
+check_ok() {
+	for _loc in $locales; do
+		ans='y
+n
+y
+n
+y
+n
+y
+n'
+		printf '%s\n' "$ans" | LC_ALL=$_loc "$UUT" "$corpus" -type f -ok "$recorder" '{}' ';' \
+			>"$work/ok.a.o" 2>"$work/ok.a.e"; ra=$?
+		printf '%s\n' "$ans" | LC_ALL=$_loc "$ref" "$corpus" -type f -ok "$recorder" '{}' ';' \
+			>"$work/ok.b.o" 2>"$work/ok.b.e"; rb=$?
+		normprog <"$work/ok.a.e" >"$work/ok.a.en"; normprog <"$work/ok.b.e" >"$work/ok.b.en"
+		if ! cmp -s "$work/ok.a.o" "$work/ok.b.o" || ! cmp -s "$work/ok.a.en" "$work/ok.b.en" ||
+			[ "$ra" != "$rb" ]; then
+			echo "  DIFF [ok/$_loc] rc a=$ra b=$rb"
+			diff "$work/ok.a.o" "$work/ok.b.o" | head -6
+			diff "$work/ok.a.en" "$work/ok.b.en" | head -4
+			echo "ok" >>"$work/fails"
+		fi
+	done
+}
+
+# -delete is destructive: run each tool on an identical copy, then compare the
+# resulting tree (listed with the reference), stderr, and exit code.
+check_delete() {
+	rm -rf "$work/delA" "$work/delB"
+	cp -R "$corpus" "$work/delA"
+	cp -R "$corpus" "$work/delB"
+	"$ref" "$work/delB" -delete 2>"$work/del.b.e"; rb=$?
+	"$UUT" "$work/delA" -delete 2>"$work/del.a.e"; ra=$?
+	{ [ -d "$work/delB" ] && (cd "$work/delB" && "$ref" . | sort); } >"$work/del.b.tree" 2>/dev/null
+	{ [ -d "$work/delA" ] && (cd "$work/delA" && "$ref" . | sort); } >"$work/del.a.tree" 2>/dev/null
+	normprog <"$work/del.a.e" | sed "s#$work/delA#C#g" >"$work/del.a.en"
+	normprog <"$work/del.b.e" | sed "s#$work/delB#C#g" >"$work/del.b.en"
+	if ! cmp -s "$work/del.a.tree" "$work/del.b.tree" || ! cmp -s "$work/del.a.en" "$work/del.b.en" ||
+		[ "$ra" != "$rb" ]; then
+		echo "  DIFF [delete] rc a=$ra b=$rb"
+		diff "$work/del.b.tree" "$work/del.a.tree" | head -8
+		diff "$work/del.b.en" "$work/del.a.en" | head -4
+		echo "delete" >>"$work/fails"
+	fi
+}
+
 # Available locales: C plus a UTF-8 one if the box has it.
 utf8=""
 for L in C.UTF-8 en_US.UTF-8 en_US.utf8; do
@@ -181,6 +243,8 @@ if [ -f tests/golden/PARITY_ACTIVE ] && [ -x "$UUT" ]; then
 	for L in $locales; do
 		phase "$UUT" "$ref" "parity" "$L"
 	done
+	check_ok
+	check_delete
 	if [ -s "$work/fails" ]; then
 		n=$(wc -l <"$work/fails" | tr -d ' ')
 		echo "GOLDEN: parity FAILED ($n diffs vs find $REFTAG)"

@@ -3,6 +3,8 @@
 #include "parse.h"
 #include "walk.h"
 #include "action.h"
+#include "exec.h"
+#include "diag.h"
 #include "arena.h"
 #include "dstr.h"
 
@@ -45,6 +47,7 @@ static void report_parse_error(const struct parse_result *pr)
 int main(int argc, char **argv)
 {
 	setlocale(LC_ALL, "");
+	frt_diag_init();
 
 	if (argc >= 2) {
 		if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-version") == 0) {
@@ -72,7 +75,11 @@ int main(int argc, char **argv)
 	int exit_status = 0;
 
 	for (int i = 0; i < pr.npaths; i++)
-		frt_walk(pr.paths[i], &pr.opts, pr.expr, &out, 1, &exit_status);
+		if (frt_walk(pr.paths[i], &pr.opts, pr.expr, &out, 1, &exit_status))
+			break; /* -quit */
+
+	/* run any pending -exec ... + batches accumulated across all roots */
+	frt_exec_flush_pending(pr.expr, &out, 1, &exit_status);
 
 	out_flush(&out, 1);
 	dstr_free(&out);

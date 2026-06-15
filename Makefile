@@ -36,9 +36,11 @@ LDLIBS  += $(LDLIBS_OPT)
 SRC = \
 	src/action.c \
 	src/arena.c \
+	src/diag.c \
 	src/dstr.c \
 	src/entry.c \
 	src/eval.c \
+	src/exec.c \
 	src/glob.c \
 	src/main.c \
 	src/parse.c \

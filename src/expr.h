@@ -35,7 +35,7 @@ enum pred_id {
 	PRED_SIZE, PRED_LINKS, PRED_INUM, PRED_UID, PRED_GID,
 	PRED_NOUSER, PRED_NOGROUP, PRED_SAMEFILE, PRED_PERM, PRED_ACCESS,
 	PRED_TIME,
-	ACT_PRINT, ACT_PRINT0,
+	ACT_PRINT, ACT_PRINT0, ACT_EXEC, ACT_DELETE, ACT_QUIT,
 };
 
 /* Numeric comparison form for +N / -N / N arguments. */
@@ -74,6 +74,14 @@ struct expr {
 			long ref_nsec;
 			long window;       /* EQ window in seconds (DAYSECS or 60); 0 for -newer */
 		} time;
+		struct {
+			char **tmpl;       /* command template tokens (incl. "{}") */
+			int ntmpl;
+			int multiple;      /* + batch mode (vs ; one-per-file) */
+			int execdir;       /* run in the file's directory */
+			int ok;            /* prompt on stderr / read stdin first */
+			struct exec_batch *batch; /* + accumulator (heap), else NULL */
+		} exec;
 	} u;
 };
 
@@ -81,6 +89,7 @@ struct expr {
  * evaluation is one entry at a time so this is single-threaded shared state. */
 struct evalctx {
 	int dirfd;             /* fd of the dir containing the entry (AT_FDCWD for roots) */
+	int dir_id;            /* unique id of the containing directory instance (-execdir +) */
 	const char *statname;  /* name to pass to fstatat under dirfd (root: full path) */
 	int follow;            /* symlink follow mode: 0=-P 1=-L 2=-H */
 	struct dstr *out;      /* output buffer */
@@ -88,6 +97,7 @@ struct evalctx {
 	struct arena *arena;   /* for lazy stat allocation */
 	int *exit_status;
 	bool prune;            /* set by -prune: walker skips descent into this dir */
+	bool quit;             /* set by -quit: walker stops the whole search */
 };
 
 /* stat-on-demand: fill ent->st (lstat or stat per follow), cached. NULL on

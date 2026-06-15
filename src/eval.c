@@ -10,14 +10,22 @@ bool eval_expr(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 		return e->eval(e, ent, ctx);
 	case EXPR_NOT:
 		return !eval_expr(e->lhs, ent, ctx);
-	case EXPR_AND:
-		/* C && short-circuits: rhs (incl. its side effects) is skipped
-		 * exactly when lhs is false. */
-		return eval_expr(e->lhs, ent, ctx) && eval_expr(e->rhs, ent, ctx);
-	case EXPR_OR:
-		return eval_expr(e->lhs, ent, ctx) || eval_expr(e->rhs, ent, ctx);
+	case EXPR_AND: {
+		bool l = eval_expr(e->lhs, ent, ctx);
+		if (ctx->quit) /* -quit aborts immediately; don't run rhs */
+			return l;
+		return l && eval_expr(e->rhs, ent, ctx);
+	}
+	case EXPR_OR: {
+		bool l = eval_expr(e->lhs, ent, ctx);
+		if (ctx->quit)
+			return l;
+		return l || eval_expr(e->rhs, ent, ctx);
+	}
 	case EXPR_COMMA: {
 		(void)eval_expr(e->lhs, ent, ctx); /* evaluated for side effects */
+		if (ctx->quit)
+			return false;
 		return eval_expr(e->rhs, ent, ctx);
 	}
 	}

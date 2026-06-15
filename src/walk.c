@@ -2,12 +2,13 @@
 #include "eval.h"
 #include "entry.h"
 #include "util.h"
+#include "diag.h"
+#include "exec.h"
 #include "sys/dir.h"
 #include "sys/xstat.h"
 
 #include <errno.h>
 #include <fcntl.h>
-#include <langinfo.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,27 +26,22 @@ struct walkenv {
 	struct arena arena;
 	struct dstr path;
 	struct evalctx ctx;
-	int utf8;          /* locale uses UTF-8 quotes in diagnostics */
 	dev_t start_dev;   /* -xdev: device of the start path */
 	struct ancestor *anc; /* -L: (dev,ino) of directories on the current path */
 	int nanc, anccap;
+	int dir_seq;       /* monotonic directory-instance counter (-execdir +) */
 };
 
-/* gnulib-style diagnostic: `ferret: <quoted-path>: <strerror>`. Quote chars are
- * locale-dependent (audit 01): U+2018/U+2019 under UTF-8, ASCII ' under C. */
 static void report_error(struct walkenv *we, const char *path, int err)
 {
-	if (we->utf8)
-		fprintf(stderr, "ferret: \xe2\x80\x98%s\xe2\x80\x99: %s\n", path, strerror(err));
-	else
-		fprintf(stderr, "ferret: '%s': %s\n", path, strerror(err));
+	frt_diag_errno("", path, err);
 	*we->ctx.exit_status = 1;
 }
 
 static void report_loop(struct walkenv *we, const char *child, const char *ancestor)
 {
-	const char *q1 = we->utf8 ? "\xe2\x80\x98" : "'";
-	const char *q2 = we->utf8 ? "\xe2\x80\x99" : "'";
+	const char *q1 = frt_diag_utf8() ? "\xe2\x80\x98" : "'";
+	const char *q2 = frt_diag_utf8() ? "\xe2\x80\x99" : "'";
 	fprintf(stderr,
 		"ferret: File system loop detected; %s%s%s is part of the same file system "
 		"loop as %s%s%s.\n",
@@ -171,7 +167,7 @@ static void descend_into(struct walkenv *we, int parent_fd, const char *name, in
 /* Evaluate one entry (respecting -mindepth) and recurse if it is a descendable
  * directory (respecting pre/post order, -prune, -maxdepth, -xdev). */
 static void process_entry(struct walkenv *we, struct entry *ent, int dirfd, const char *name,
-			  int depth)
+			  int depth, int dir_id)
 {
 	const struct options *o = we->opts;
 	int isdir = entry_is_dir(we, ent);
@@ -190,10 +186,16 @@ static void process_entry(struct walkenv *we, struct entry *ent, int dirfd, cons
 		/* post-order: contents first, then the directory. -prune is a no-op. */
 		if (isdir && may_descend(we, ent, depth))
 			descend_into(we, dirfd, name, depth + 1, ent);
+		if (we->ctx.quit)
+			return;
 		if (depth >= o->mindepth) {
-			/* recursion may have realloc'd the path buffer; refresh the
-			 * pointer (the buffer content is restored to this entry's path). */
+			/* recursion left ctx->dirfd/dir_id pointing at the (now-closed)
+			 * child dir and may have realloc'd the path buffer; restore them
+			 * for the post-order evaluation of this entry. */
 			ent->path = we->path.data;
+			we->ctx.dirfd = dirfd;
+			we->ctx.dir_id = dir_id;
+			we->ctx.statname = ent->name;
 			we->ctx.prune = false;
 			(void)eval_expr(we->expr, ent, &we->ctx);
 		}
@@ -202,6 +204,8 @@ static void process_entry(struct walkenv *we, struct entry *ent, int dirfd, cons
 		we->ctx.prune = false;
 		if (depth >= o->mindepth)
 			(void)eval_expr(we->expr, ent, &we->ctx);
+		if (we->ctx.quit)
+			return;
 		if (isdir && !we->ctx.prune && may_descend(we, ent, depth))
 			descend_into(we, dirfd, name, depth + 1, ent);
 	}
@@ -210,6 +214,7 @@ static void process_entry(struct walkenv *we, struct entry *ent, int dirfd, cons
 static void walk_children(struct walkenv *we, struct frt_dir *d, int depth)
 {
 	int dirfd = frt_dirfd(d);
+	int my_id = ++we->dir_seq; /* unique id for this directory instance */
 	struct frt_dirent de;
 	int r;
 
@@ -231,35 +236,44 @@ static void walk_children(struct walkenv *we, struct frt_dir *d, int depth)
 		ent->basepos = (uint32_t)basepos;
 
 		we->ctx.dirfd = dirfd;
+		we->ctx.dir_id = my_id;
 		we->ctx.statname = ent->name;
 
-		process_entry(we, ent, dirfd, de.name, depth);
+		process_entry(we, ent, dirfd, de.name, depth, my_id);
 
 		dstr_truncate(&we->path, oldlen);
 		arena_rewind(&we->arena, mark);
+
+		if (we->ctx.quit)
+			break;
 	}
 	if (r < 0)
 		report_error(we, we->path.data, errno);
+	/* flush this directory's -execdir '+' batch before its fd closes. */
+	we->ctx.dirfd = dirfd;
+	frt_exec_flush_tree(we->expr, 1, my_id, &we->ctx);
 }
 
-void frt_walk(const char *root, const struct options *opts, const struct expr *expr,
-	      struct dstr *out, int out_fd, int *exit_status)
+int frt_walk(const char *root, const struct options *opts, const struct expr *expr,
+	     struct dstr *out, int out_fd, int *exit_status)
 {
 	struct walkenv we;
 	we.opts = opts;
 	we.expr = expr;
 	arena_init(&we.arena, 0);
 	dstr_init(&we.path);
-	we.utf8 = (strcmp(nl_langinfo(CODESET), "UTF-8") == 0);
 	we.anc = NULL;
 	we.nanc = we.anccap = 0;
+	we.dir_seq = 0;
 
 	we.ctx.follow = opts->follow;
+	we.ctx.dir_id = 0;
 	we.ctx.out = out;
 	we.ctx.out_fd = out_fd;
 	we.ctx.arena = &we.arena;
 	we.ctx.exit_status = exit_status;
 	we.ctx.prune = false;
+	we.ctx.quit = false;
 
 	dstr_appendz(&we.path, root);
 
@@ -309,8 +323,10 @@ void frt_walk(const char *root, const struct options *opts, const struct expr *e
 				frt_dirclose(d);
 			}
 		}
-		if (0 >= opts->mindepth) {
+		if (!we.ctx.quit && 0 >= opts->mindepth) {
 			ent->path = we.path.data; /* walk may have realloc'd the buffer */
+			we.ctx.dirfd = AT_FDCWD; /* recursion changed it; root stats from cwd */
+			we.ctx.statname = root;
 			we.ctx.prune = false;
 			(void)eval_expr(expr, ent, &we.ctx);
 		}
@@ -318,7 +334,7 @@ void frt_walk(const char *root, const struct options *opts, const struct expr *e
 		we.ctx.prune = false;
 		if (0 >= opts->mindepth)
 			(void)eval_expr(expr, ent, &we.ctx);
-		if (isdir && !we.ctx.prune && may_descend(&we, ent, 0)) {
+		if (!we.ctx.quit && isdir && !we.ctx.prune && may_descend(&we, ent, 0)) {
 			struct frt_dir *d = NULL;
 			if (frt_diropen(root, &d) != 0)
 				report_error(&we, root, errno);
@@ -337,4 +353,5 @@ done:
 	free(we.anc);
 	dstr_free(&we.path);
 	arena_destroy(&we.arena);
+	return we.ctx.quit;
 }

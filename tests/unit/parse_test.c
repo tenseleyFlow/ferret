@@ -188,6 +188,52 @@ int main(void)
 		CHECK("newer window 0", e->u.time.window == 0);
 	}
 
+	/* -exec ... ; : action, ntmpl, not multiple, suppresses implicit print */
+	{
+		char *argv[] = {"ferret", ".", "-exec", "echo", "{}", ";"};
+		struct parse_result pr = parse(&a, 6, argv);
+		CHECK("exec is sole action (no print wrap)",
+		      pr.expr->kind == EXPR_LEAF && pr.expr->pred == ACT_EXEC);
+		CHECK("exec ntmpl", pr.expr->u.exec.ntmpl == 2);
+		CHECK("exec not multiple", pr.expr->u.exec.multiple == 0);
+	}
+	/* -exec ... {} + : multiple (batch) */
+	{
+		char *argv[] = {"ferret", ".", "-exec", "echo", "{}", "+"};
+		struct parse_result pr = parse(&a, 6, argv);
+		CHECK("exec + multiple", pr.expr->u.exec.multiple == 1);
+		CHECK("exec + batch allocated", pr.expr->u.exec.batch != NULL);
+	}
+	/* -execdir sets execdir flag */
+	{
+		char *argv[] = {"ferret", ".", "-execdir", "echo", "{}", ";"};
+		struct parse_result pr = parse(&a, 6, argv);
+		CHECK("execdir flag", pr.expr->u.exec.execdir == 1);
+	}
+	/* -exec with no terminator -> error */
+	{
+		char *argv[] = {"ferret", ".", "-exec", "echo", "{}"};
+		struct parse_result pr;
+		int rc = frt_parse(5, argv, &a, &pr);
+		CHECK("exec no terminator fails", rc == -1 && pr.error != NULL);
+	}
+	/* -delete implies -depth and is an action */
+	{
+		char *argv[] = {"ferret", ".", "-delete"};
+		struct parse_result pr = parse(&a, 3, argv);
+		CHECK("delete sole action", pr.expr->kind == EXPR_LEAF &&
+					    pr.expr->pred == ACT_DELETE);
+		CHECK("delete implies depth", pr.opts.depth_first == 1);
+	}
+	/* -quit does NOT suppress implicit print (gets wrapped with -print) */
+	{
+		char *argv[] = {"ferret", ".", "-quit"};
+		struct parse_result pr = parse(&a, 3, argv);
+		CHECK("quit wrapped with print", pr.expr->kind == EXPR_AND &&
+						 pr.expr->lhs->pred == ACT_QUIT &&
+						 pr.expr->rhs->pred == ACT_PRINT);
+	}
+
 	/* unknown predicate -> error */
 	{
 		char *argv[] = {"ferret", ".", "-bogus"};

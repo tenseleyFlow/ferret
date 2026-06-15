@@ -1,6 +1,7 @@
 #include "parse.h"
 #include "pred.h"
 #include "action.h"
+#include "exec.h"
 #include "glob.h"
 #include "sys/xstat.h"
 
@@ -391,6 +392,81 @@ static int parse_datetime_basic(const char *s, long long *sec, long *nsec)
 		return -1;
 	*sec = t;
 	return 0;
+}
+
+/* Parse -exec/-execdir/-ok/-okdir: collect the command template up to ';' or
+ * '+', validate {} rules (audit 02). execdir/ok control the dir/prompt behavior;
+ * '+' is allowed only for -exec/-execdir (not -ok/-okdir). */
+static struct expr *parse_exec(struct pstate *ps, struct expr *e, int execdir, int ok)
+{
+	int allow_plus = !ok;
+	int start = ps->i;
+	int term = 0; /* 1=';', 2='+' */
+	int end = -1;
+	int prev_braces = 0;
+	for (int k = ps->i; k < ps->argc; k++) {
+		const char *t = ps->argv[k];
+		if (strcmp(t, ";") == 0) {
+			term = 1;
+			end = k;
+			break;
+		}
+		if (allow_plus && strcmp(t, "+") == 0 && prev_braces) {
+			term = 2;
+			end = k;
+			break;
+		}
+		prev_braces = (strcmp(t, "{}") == 0);
+	}
+	if (term == 0) {
+		ps->error = "missing terminator (expected ';' or '+') for -exec";
+		return NULL;
+	}
+	int ntmpl = end - start;
+	if (ntmpl == 0) {
+		ps->error = "missing command for -exec";
+		return NULL;
+	}
+	char **tmpl = arena_alloc(ps->arena, (size_t)ntmpl * sizeof(char *));
+	for (int k = 0; k < ntmpl; k++)
+		tmpl[k] = arena_strdup(ps->arena, ps->argv[start + k]);
+	ps->i = end + 1;
+
+	/* NOTE: find 4.10.0 documents that {} is forbidden in the -execdir/-okdir
+	 * utility name, but the check (parser.c: `0 == end`) is dead code and never
+	 * fires, so find actually substitutes it. Parity-first: match find and allow
+	 * it (recorded in .docs/deviations.md). */
+	if (term == 2) {
+		int braces = 0;
+		for (int k = 0; k < ntmpl; k++) {
+			if (strcmp(tmpl[k], "{}") == 0)
+				braces++;
+			else if (strstr(tmpl[k], "{}")) {
+				ps->error = "only one instance of {} is supported with -exec ... +";
+				return NULL;
+			}
+		}
+		if (braces != 1) {
+			ps->error = "only one instance of {} is supported with -exec ... +";
+			return NULL;
+		}
+	}
+
+	e->pred = ACT_EXEC;
+	e->eval = act_exec;
+	e->pure = false;
+	e->no_default_print = true;
+	e->u.exec.tmpl = tmpl;
+	e->u.exec.ntmpl = ntmpl;
+	e->u.exec.multiple = (term == 2);
+	e->u.exec.execdir = execdir;
+	e->u.exec.ok = ok;
+	e->u.exec.batch = NULL;
+	e->cost = (term == 2) ? 100.0f : 100000.0f; /* + amortizes; ; forks per file */
+	e->prob = 1.0f;
+	ps->has_action = true;
+	frt_exec_init(e);
+	return e;
 }
 
 /* A positional option (-depth, -xdev, ...) evaluates to a no-op true; its effect
@@ -829,6 +905,34 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->cost = COST_PRINT;
 		e->prob = 1.0f;
 		ps->has_action = true;
+		return e;
+	}
+	if (strcmp(name, "-exec") == 0)
+		return parse_exec(ps, e, 0, 0);
+	if (strcmp(name, "-execdir") == 0)
+		return parse_exec(ps, e, 1, 0);
+	if (strcmp(name, "-ok") == 0)
+		return parse_exec(ps, e, 0, 1);
+	if (strcmp(name, "-okdir") == 0)
+		return parse_exec(ps, e, 1, 1);
+	if (strcmp(name, "-delete") == 0) {
+		ps->opts->depth_first = 1; /* -delete implies -depth */
+		e->pred = ACT_DELETE;
+		e->eval = act_delete;
+		e->pure = false;
+		e->no_default_print = true;
+		e->cost = COST_STAT;
+		e->prob = 1.0f;
+		ps->has_action = true;
+		return e;
+	}
+	if (strcmp(name, "-quit") == 0) {
+		e->pred = ACT_QUIT;
+		e->eval = act_quit;
+		e->pure = false; /* control-flow side effect: pin */
+		/* -quit does NOT suppress the implicit -print (audit 01). */
+		e->cost = COST_FAST;
+		e->prob = 1.0f;
 		return e;
 	}
 
