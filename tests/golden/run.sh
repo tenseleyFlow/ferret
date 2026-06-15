@@ -317,6 +317,25 @@ check_olevels() {
 	done
 }
 
+# Parallel-stat invariant: output must be identical for any --ferret-threads N
+# (only stat work is parallel; order is unchanged). Compare 1 vs 4 over CASES.
+check_threads() {
+	printf '%s\n' "$CASES" | while IFS= read -r c; do
+		[ -n "$c" ] || continue
+		case "$c" in *-fprint*|*-fls*|*-fprintf*) continue ;; esac
+		exp=$(printf '%s' "$c" | sed "s#%C#$corpus#g; s#%U#$me_uid#g; s#%G#$me_gid#g; s#%R#$recorder#g")
+		# shellcheck disable=SC2086
+		set -- $exp
+		LC_ALL=C "$UUT" --ferret-threads 1 "$@" >"$work/th1.o" 2>"$work/th1.e"; r1=$?
+		LC_ALL=C "$UUT" --ferret-threads 4 "$@" >"$work/th4.o" 2>"$work/th4.e"; r4=$?
+		if ! cmp -s "$work/th1.o" "$work/th4.o" || [ "$r1" != "$r4" ]; then
+			echo "  DIFF [threads 1 vs 4]: $c"
+			diff "$work/th1.o" "$work/th4.o" | head -4
+			echo "threads" >>"$work/fails"
+		fi
+	done
+}
+
 # Available locales: C plus a UTF-8 one if the box has it.
 utf8=""
 for L in C.UTF-8 en_US.UTF-8 en_US.utf8; do
@@ -346,6 +365,7 @@ if [ -f tests/golden/PARITY_ACTIVE ] && [ -x "$UUT" ]; then
 	check_files
 	check_fstype
 	check_olevels
+	check_threads
 	if [ -s "$work/fails" ]; then
 		n=$(wc -l <"$work/fails" | tr -d ' ')
 		echo "GOLDEN: parity FAILED ($n diffs vs find $REFTAG)"
