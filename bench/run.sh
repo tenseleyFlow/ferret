@@ -34,7 +34,9 @@ rc=0
 bench_one() {
 	_lbl=$1; shift
 	_csv="$work/m_$_lbl.csv"
-	hyperfine -N -w 5 -r 30 --export-csv "$_csv" \
+	# No -N: the >/dev/null redirect needs a shell. Both tools pay the same sh -c
+	# overhead, so the comparison stays fair (output is discarded to time compute).
+	hyperfine -w 5 -r 30 --export-csv "$_csv" \
 		"$FERRET $* >/dev/null" "$ref $* >/dev/null" >/dev/null 2>&1 || {
 		echo "bench: hyperfine failed for $_lbl"; rc=1; return; }
 	# below ~10ms use the min metric (noise-robust); else mean.

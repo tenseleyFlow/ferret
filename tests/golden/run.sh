@@ -6,6 +6,7 @@
 #   phase 2 (only when tests/golden/PARITY_ACTIVE exists): ferret-vs-ref parity.
 # The only sanctioned normalization is the leading program-name token on stderr.
 set -u
+set -f # no pathname expansion: glob patterns in CASES (*.c) must pass literally
 
 here=$(dirname "$0")
 root=$(cd "$here/../.." && pwd)
@@ -32,11 +33,28 @@ corpus="$work/corpus"
 sh tests/golden/mkcorpus.sh "$corpus" >/dev/null
 
 # Case matrix. %C expands to the corpus root. Cases grow per sprint (sprint 02+).
-# At M0/M1 the matrix is intentionally tiny; phase 1 still validates determinism.
+# Sprint 02 surface: -name/-iname/-type/-empty/-print/-print0, operators, implicit print.
 CASES='
 %C
--print %C
 %C -print
+%C -print0
+%C -name *.c
+%C -iname *.C
+%C -name *.txt
+%C -name file.txt
+%C -type f
+%C -type d
+%C -type l
+%C -type f,l
+%C -empty
+%C -true
+%C -false
+%C -name *.c -o -name *.log
+%C -type d -print
+%C ! -name *.c
+%C ( -name *.c -o -name *.dat )
+%C -name *.c , -name *.log
+%C -type f -a -name *.c
 '
 
 normprog() { sed 's/^find: /PROG: /; s/^ferret: /PROG: /'; }
