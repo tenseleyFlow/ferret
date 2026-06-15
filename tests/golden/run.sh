@@ -296,6 +296,27 @@ check_fstype() {
 	done
 }
 
+# Optimizer invariant: ferret's output must be identical across -O levels (only
+# pure predicates reorder; actions are pinned). Compare -O0 vs -O1..-O4.
+check_olevels() {
+	printf '%s\n' "$CASES" | while IFS= read -r c; do
+		[ -n "$c" ] || continue
+		case "$c" in *-fprint*|*-fls*|*-fprintf*) continue ;; esac # write to files
+		exp=$(printf '%s' "$c" | sed "s#%C#$corpus#g; s#%U#$me_uid#g; s#%G#$me_gid#g; s#%R#$recorder#g")
+		# shellcheck disable=SC2086
+		set -- $exp
+		LC_ALL=C "$UUT" -O0 "$@" >"$work/ol0.o" 2>"$work/ol0.e"; r0=$?
+		for lv in 1 2 3 4; do
+			LC_ALL=C "$UUT" -O$lv "$@" >"$work/oln.o" 2>"$work/oln.e"; rn=$?
+			if ! cmp -s "$work/ol0.o" "$work/oln.o" || [ "$r0" != "$rn" ]; then
+				echo "  DIFF [-O0 vs -O$lv]: $c"
+				diff "$work/ol0.o" "$work/oln.o" | head -4
+				echo "olevel" >>"$work/fails"
+			fi
+		done
+	done
+}
+
 # Available locales: C plus a UTF-8 one if the box has it.
 utf8=""
 for L in C.UTF-8 en_US.UTF-8 en_US.utf8; do
@@ -324,6 +345,7 @@ if [ -f tests/golden/PARITY_ACTIVE ] && [ -x "$UUT" ]; then
 	check_delete
 	check_files
 	check_fstype
+	check_olevels
 	if [ -s "$work/fails" ]; then
 		n=$(wc -l <"$work/fails" | tr -d ' ')
 		echo "GOLDEN: parity FAILED ($n diffs vs find $REFTAG)"
