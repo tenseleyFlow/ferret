@@ -37,8 +37,7 @@ struct parse_result {
 	struct expr *expr; /* full expression including any implicit -print */
 	struct options opts;
 	struct outfile *outfiles; /* -f* destination files to flush at the end */
-	const char *error;     /* NULL on success; message body (no "ferret: " prefix) */
-	const char *error_arg; /* offending token for messages that name one, else NULL */
+	const char *error;     /* NULL on success; complete message body (no "ferret: " prefix) */
 };
 
 /* Parse argv (argv[0] = program name). Expr/paths allocated from `arena`.

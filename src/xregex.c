@@ -17,12 +17,17 @@ struct frt_regex {
 
 int frt_regextype_from_name(const char *name)
 {
-	if (strcmp(name, "emacs") == 0)
+	/* Accept every dialect name find does. ferret has five engines; names map
+	 * to the closest one. Exact gnulib-vs-POSIX semantics for some dialects
+	 * (gnu-awk, the minimal-basic corners) may differ — see deviations.md. */
+	if (strcmp(name, "emacs") == 0 || strcmp(name, "findutils-default") == 0)
 		return FRT_RE_EMACS;
-	if (strcmp(name, "posix-awk") == 0 || strcmp(name, "awk") == 0)
+	if (strcmp(name, "posix-awk") == 0 || strcmp(name, "awk") == 0 ||
+	    strcmp(name, "gnu-awk") == 0)
 		return FRT_RE_POSIX_AWK;
 	if (strcmp(name, "posix-basic") == 0 || strcmp(name, "ed") == 0 ||
-	    strcmp(name, "grep") == 0)
+	    strcmp(name, "grep") == 0 || strcmp(name, "sed") == 0 ||
+	    strcmp(name, "posix-minimal-basic") == 0)
 		return FRT_RE_POSIX_BASIC;
 	if (strcmp(name, "posix-egrep") == 0 || strcmp(name, "egrep") == 0)
 		return FRT_RE_POSIX_EGREP;

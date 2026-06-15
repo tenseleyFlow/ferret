@@ -30,21 +30,10 @@ static void print_usage(FILE *f)
 
 static void report_parse_error(const struct parse_result *pr)
 {
-	const char *e = pr->error, *a = pr->error_arg;
-	if (strcmp(e, "unknown predicate") == 0 && a)
-		fprintf(stderr, "ferret: unknown predicate `%s'\n", a);
-	else if (strcmp(e, "invalid -size type") == 0 && a)
-		fprintf(stderr, "ferret: invalid -size type `%s'\n", a);
-	else if (strcmp(e, "invalid mode") == 0 && a)
-		fprintf(stderr, "ferret: invalid mode '%s'\n", a);
-	else if (strcmp(e, "is not the name of a known user") == 0 && a)
-		fprintf(stderr, "ferret: %s is not the name of a known user\n", a);
-	else if (strcmp(e, "is not the name of a known group") == 0 && a)
-		fprintf(stderr, "ferret: %s is not the name of a known group\n", a);
-	else if (strcmp(e, "non-numeric argument") == 0 && a)
-		fprintf(stderr, "ferret: invalid argument to %s\n", a);
-	else
-		fprintf(stderr, "ferret: %s\n", e);
+	/* The parser builds the complete message (with find's wording, backticks,
+	 * and locale-quoted values) at each error site, so this only adds the
+	 * program prefix. */
+	fprintf(stderr, "ferret: %s\n", pr->error);
 }
 
 int main(int argc, char **argv)

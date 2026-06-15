@@ -9,6 +9,7 @@
 #include "xregex.h"
 #include "sys/xstat.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
 #include <limits.h>
@@ -37,8 +38,7 @@ struct pstate {
 	struct arena *arena;
 	struct options *opts;     /* positional options write here */
 	struct outfile **outfiles; /* -f* destination registry */
-	const char *error;     /* set on failure */
-	const char *error_arg; /* offending token, if any */
+	const char *error;     /* set on failure: complete message body */
 	bool has_action;       /* any action seen => suppress implicit -print */
 	/* time origin (find: start_time; cur_day_start defaults to start-DAYSECS,
 	 * -daystart floors it to local midnight; positional — affects later tests). */
@@ -103,7 +103,6 @@ static void set_errorf(struct pstate *ps, const char *fmt, ...)
 	va_end(ap);
 	if (n < 0) {
 		ps->error = "invalid expression";
-		ps->error_arg = NULL;
 		return;
 	}
 	char *buf = arena_alloc(ps->arena, (size_t)n + 1);
@@ -111,7 +110,30 @@ static void set_errorf(struct pstate *ps, const char *fmt, ...)
 	vsnprintf(buf, (size_t)n + 1, fmt, ap);
 	va_end(ap);
 	ps->error = buf;
-	ps->error_arg = NULL;
+}
+
+/* find quotes user-supplied values with the locale's quoting style: ASCII
+ * 'apostrophes' in C, ‘typographic’ in UTF-8. These return the open/close
+ * marks so set_errorf can splice them in as %s. */
+static const char *q_open(void) { return frt_diag_utf8() ? "\xe2\x80\x98" : "'"; }
+static const char *q_close(void) { return frt_diag_utf8() ? "\xe2\x80\x99" : "'"; }
+
+/* find's -regextype error lists every accepted dialect, each locale-quoted. */
+static void set_regextype_error(struct pstate *ps, const char *arg)
+{
+	static const char *const types[] = {
+		"findutils-default", "ed", "emacs", "gnu-awk", "grep", "posix-awk",
+		"awk", "posix-basic", "posix-egrep", "egrep", "posix-extended",
+		"posix-minimal-basic", "sed",
+	};
+	const char *oq = q_open(), *cq = q_close();
+	char list[768];
+	size_t n = 0;
+	for (size_t i = 0; i < sizeof types / sizeof *types && n < sizeof list; i++)
+		n += (size_t)snprintf(list + n, sizeof list - n, "%s%s%s%s",
+				      i ? ", " : "", oq, types[i], cq);
+	set_errorf(ps, "Unknown regular expression type %s%s%s; valid types are %s.",
+		   oq, arg, cq, list);
 }
 
 /* Parse a -type/-xtype comma list, matching find's grammar and its five
@@ -215,45 +237,64 @@ static int parse_num_arg(const char *s, int *kind, unsigned long long *val)
 	return 0;
 }
 
+/* Parse a numeric uid/gid: base-10, no trailing junk, within [0, maxval].
+ * Mirrors find's xstrtoumax + UID_T_MAX/GID_T_MAX check. 0 / -1. */
+static int parse_id(const char *s, unsigned long long maxval, unsigned long long *out)
+{
+	errno = 0;
+	char *end;
+	unsigned long long v = strtoull(s, &end, 10);
+	if (end == s || *end != '\0' || errno == ERANGE || v > maxval)
+		return -1;
+	*out = v;
+	return 0;
+}
+
 /* Parse a -size argument: [+-]N[bcwkMG]. Returns 0, -1 (bad number), -2 (bad
- * suffix). On bad suffix, *suffix is the offending char. */
+ * suffix). On bad suffix, *suffix is the offending char. find takes the unit
+ * from the LAST character, then parses everything before it as the number, so
+ * "100baz" is rejected on 'z' (not 'a') and "abc" is a bad number, not a bad
+ * suffix. */
 static int parse_size_arg(const char *s, int *kind, unsigned long long *val, long long *unit, char *suffix)
 {
-	if (!s || !*s)
+	size_t len = s ? strlen(s) : 0;
+	if (len == 0)
 		return -1;
+	long long u;
+	size_t numlen = len - 1; /* number part when a suffix is present */
+	switch (s[len - 1]) {
+	case 'b': u = 512; break;
+	case 'c': u = 1; break;
+	case 'w': u = 2; break;
+	case 'k': u = 1024; break;
+	case 'M': u = 1024LL * 1024; break;
+	case 'G': u = 1024LL * 1024 * 1024; break;
+	default:
+		if (s[len - 1] >= '0' && s[len - 1] <= '9') {
+			u = 512;      /* no suffix: default 'b' = 512-byte blocks */
+			numlen = len;
+		} else {
+			*suffix = s[len - 1];
+			return -2;
+		}
+	}
 	*kind = COMP_EQ;
 	const char *p = s;
-	if (*p == '+') {
-		*kind = COMP_GT;
-		p++;
-	} else if (*p == '-') {
-		*kind = COMP_LT;
+	const char *pend = s + numlen;
+	if (p < pend && (*p == '+' || *p == '-')) {
+		*kind = (*p == '+') ? COMP_GT : COMP_LT;
 		p++;
 	}
-	if (*p < '0' || *p > '9')
-		return -1;
+	if (p == pend)
+		return -1; /* nothing but a sign */
 	unsigned long long v = 0;
-	while (*p >= '0' && *p <= '9') {
-		unsigned d = (unsigned)(*p++ - '0');
+	for (; p < pend; p++) {
+		if (*p < '0' || *p > '9')
+			return -1;
+		unsigned d = (unsigned)(*p - '0');
 		if (v > (ULLONG_MAX - d) / 10)
 			return -1; /* overflow: find rejects via get_num */
 		v = v * 10 + d;
-	}
-	long long u = 512; /* default suffix 'b' = 512-byte blocks */
-	if (*p) {
-		switch (*p) {
-		case 'b': u = 512; break;
-		case 'c': u = 1; break;
-		case 'w': u = 2; break;
-		case 'k': u = 1024; break;
-		case 'M': u = 1024LL * 1024; break;
-		case 'G': u = 1024LL * 1024 * 1024; break;
-		default:  *suffix = *p; return -2;
-		}
-		if (p[1]) {
-			*suffix = p[1];
-			return -2;
-		}
 	}
 	*val = v;
 	*unit = u;
@@ -373,10 +414,10 @@ static void apply_daystart(struct pstate *ps)
  * `unit` is DAYSECS or 60. Mirrors find's parse_time / do_parse_xmin +
  * get_relative_timestamp exactly (audit 01, sense inversion, -N day fudge). */
 static struct expr *build_time_pred(struct pstate *ps, struct expr *e, int field, int unit,
-				    const char *arg)
+				    const char *pname, const char *arg)
 {
 	if (!arg) {
-		ps->error = "missing argument to time predicate";
+		set_errorf(ps, "missing argument to `%s'", pname);
 		return NULL;
 	}
 	struct timespec origin = ps->cur_day_start;
@@ -400,8 +441,7 @@ static struct expr *build_time_pred(struct pstate *ps, struct expr *e, int field
 	double offset = strtod(p, &end);
 	/* reject empty/trailing junk, negatives, NaN (!(>=0)), and inf/huge. */
 	if (end == p || *end != '\0' || !(offset >= 0.0) || offset > 1.0e18) {
-		ps->error = "non-numeric argument";
-		ps->error_arg = arg;
+		set_errorf(ps, "invalid argument `%s' to `%s'", arg, pname);
 		return NULL;
 	}
 	int kind = comp == COMP_LT ? COMP_GT : comp == COMP_GT ? COMP_LT : COMP_EQ;
@@ -578,7 +618,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 	if (strcmp(name, "-name") == 0 || strcmp(name, "-iname") == 0) {
 		const char *arg = cur(ps);
 		if (!arg) {
-			ps->error = "missing argument to -name";
+			set_errorf(ps, "missing argument to `%s'", name);
 			return NULL;
 		}
 		advance(ps);
@@ -593,7 +633,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 	if (strcmp(name, "-type") == 0) {
 		const char *arg = cur(ps);
 		if (!arg) {
-			ps->error = "missing argument to -type";
+			set_errorf(ps, "missing argument to `%s'", name);
 			return NULL;
 		}
 		advance(ps);
@@ -619,8 +659,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 	    strcmp(name, "-ipath") == 0 || strcmp(name, "-iwholename") == 0) {
 		const char *arg = cur(ps);
 		if (!arg) {
-			ps->error = "missing argument";
-			ps->error_arg = name;
+			set_errorf(ps, "missing argument to `%s'", name);
 			return NULL;
 		}
 		advance(ps);
@@ -635,8 +674,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 	if (strcmp(name, "-lname") == 0 || strcmp(name, "-ilname") == 0) {
 		const char *arg = cur(ps);
 		if (!arg) {
-			ps->error = "missing argument";
-			ps->error_arg = name;
+			set_errorf(ps, "missing argument to `%s'", name);
 			return NULL;
 		}
 		advance(ps);
@@ -651,7 +689,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 	if (strcmp(name, "-xtype") == 0) {
 		const char *arg = cur(ps);
 		if (!arg) {
-			ps->error = "missing argument to -xtype";
+			set_errorf(ps, "missing argument to `%s'", name);
 			return NULL;
 		}
 		unsigned mask;
@@ -669,7 +707,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 	if (strcmp(name, "-fstype") == 0) {
 		const char *arg = cur(ps);
 		if (!arg) {
-			ps->error = "missing argument to -fstype";
+			set_errorf(ps, "missing argument to `%s'", name);
 			return NULL;
 		}
 		advance(ps);
@@ -683,8 +721,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 	if (strcmp(name, "-regex") == 0 || strcmp(name, "-iregex") == 0) {
 		const char *arg = cur(ps);
 		if (!arg) {
-			ps->error = "missing argument";
-			ps->error_arg = name;
+			set_errorf(ps, "missing argument to `%s'", name);
 			return NULL;
 		}
 		advance(ps);
@@ -705,13 +742,12 @@ static struct expr *parse_predicate(struct pstate *ps)
 	if (strcmp(name, "-regextype") == 0) {
 		const char *arg = cur(ps);
 		if (!arg) {
-			ps->error = "missing argument to -regextype";
+			set_errorf(ps, "missing argument to `%s'", name);
 			return NULL;
 		}
 		int rt = frt_regextype_from_name(arg);
 		if (rt < 0) {
-			ps->error = "unknown regular expression type";
-			ps->error_arg = arg;
+			set_regextype_error(ps, arg);
 			return NULL;
 		}
 		advance(ps);
@@ -721,7 +757,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 	if (strcmp(name, "-size") == 0) {
 		const char *arg = cur(ps);
 		if (!arg) {
-			ps->error = "missing argument to -size";
+			set_errorf(ps, "missing argument to `%s'", name);
 			return NULL;
 		}
 		int kind;
@@ -730,16 +766,11 @@ static struct expr *parse_predicate(struct pstate *ps)
 		char bad = 0;
 		int rc = parse_size_arg(arg, &kind, &val, &unit, &bad);
 		if (rc == -2) {
-			char *b = arena_alloc(ps->arena, 2);
-			b[0] = bad;
-			b[1] = '\0';
-			ps->error = "invalid -size type";
-			ps->error_arg = b;
+			set_errorf(ps, "invalid -size type `%c'", bad);
 			return NULL;
 		}
 		if (rc != 0) {
-			ps->error = "invalid argument to -size";
-			ps->error_arg = arg;
+			set_errorf(ps, "Invalid argument `%s' to -size", arg);
 			return NULL;
 		}
 		advance(ps);
@@ -758,9 +789,13 @@ static struct expr *parse_predicate(struct pstate *ps)
 		const char *arg = cur(ps);
 		int kind;
 		unsigned long long val;
-		if (!arg || parse_num_arg(arg, &kind, &val) != 0) {
-			ps->error = "non-numeric argument";
-			ps->error_arg = name;
+		if (!arg) {
+			set_errorf(ps, "missing argument to `%s'", name);
+			return NULL;
+		}
+		if (parse_num_arg(arg, &kind, &val) != 0) {
+			set_errorf(ps, "non-numeric argument to %s: %s%s%s", name,
+				   q_open(), arg, q_close());
 			return NULL;
 		}
 		advance(ps);
@@ -782,49 +817,38 @@ static struct expr *parse_predicate(struct pstate *ps)
 	if (strcmp(name, "-user") == 0 || strcmp(name, "-group") == 0) {
 		const char *arg = cur(ps);
 		if (!arg) {
-			ps->error = "missing argument";
-			ps->error_arg = name;
+			set_errorf(ps, "missing argument to `%s'", name);
 			return NULL;
 		}
 		advance(ps);
 		int is_user = name[1] == 'u';
-		long long id;
+		unsigned long long id;
+		/* Name first; if unknown, fall back to a numeric id bounded by the
+		 * type's max (find's get_uid/get_gid via xstrtoumax). */
 		if (is_user) {
 			struct passwd *pw = getpwnam(arg);
 			if (pw)
 				id = pw->pw_uid;
-			else {
-				char *end;
-				long n = strtol(arg, &end, 10);
-				if (*arg && !*end)
-					id = n;
-				else {
-					ps->error = "is not the name of a known user";
-					ps->error_arg = arg;
-					return NULL;
-				}
+			else if (parse_id(arg, (unsigned long long)(uid_t)-1, &id) != 0) {
+				set_errorf(ps, "invalid user name or UID argument to %s: %s%s%s",
+					   name, q_open(), arg, q_close());
+				return NULL;
 			}
 		} else {
 			struct group *gr = getgrnam(arg);
 			if (gr)
 				id = gr->gr_gid;
-			else {
-				char *end;
-				long n = strtol(arg, &end, 10);
-				if (*arg && !*end)
-					id = n;
-				else {
-					ps->error = "is not the name of a known group";
-					ps->error_arg = arg;
-					return NULL;
-				}
+			else if (parse_id(arg, (unsigned long long)(gid_t)-1, &id) != 0) {
+				set_errorf(ps, "invalid group name or GID argument to %s: %s%s%s",
+					   name, q_open(), arg, q_close());
+				return NULL;
 			}
 		}
 		e->eval = is_user ? pred_uid : pred_gid;
 		e->pred = is_user ? PRED_UID : PRED_GID;
 		e->needs_stat = true;
 		e->u.num.kind = COMP_EQ;
-		e->u.num.val = (unsigned long long)id;
+		e->u.num.val = id;
 		e->cost = COST_STAT;
 		e->prob = 0.5f;
 		return e;
@@ -841,15 +865,15 @@ static struct expr *parse_predicate(struct pstate *ps)
 	if (strcmp(name, "-samefile") == 0) {
 		const char *arg = cur(ps);
 		if (!arg) {
-			ps->error = "missing argument to -samefile";
+			set_errorf(ps, "missing argument to `%s'", name);
 			return NULL;
 		}
 		advance(ps);
 		struct frt_statinfo si;
 		int follow = ps->opts->follow != 0;
 		if (frt_stat_at(AT_FDCWD, arg, follow, &si) != 0) {
-			ps->error = "cannot stat -samefile reference";
-			ps->error_arg = arg;
+			int err = errno;
+			set_errorf(ps, "%s%s%s: %s", q_open(), arg, q_close(), strerror(err));
 			return NULL;
 		}
 		e->pred = PRED_SAMEFILE;
@@ -864,7 +888,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 	if (strcmp(name, "-perm") == 0) {
 		const char *arg = cur(ps);
 		if (!arg) {
-			ps->error = "missing argument to -perm";
+			set_errorf(ps, "missing argument to `%s'", name);
 			return NULL;
 		}
 		advance(ps);
@@ -882,14 +906,12 @@ static struct expr *parse_predicate(struct pstate *ps)
 		 * '+OCTAL' = '/OCTAL' extension was removed because it clashed with
 		 * chmod's reading of the same string (parser.c). */
 		if (arg[0] == '+' && arg[1] >= '0' && arg[1] <= '7') {
-			ps->error = "invalid mode";
-			ps->error_arg = arg;
+			set_errorf(ps, "invalid mode %s%s%s", q_open(), arg, q_close());
 			return NULL;
 		}
 		unsigned mode;
 		if (parse_mode_str(m, &mode) != 0) {
-			ps->error = "invalid mode";
-			ps->error_arg = arg;
+			set_errorf(ps, "invalid mode %s%s%s", q_open(), arg, q_close());
 			return NULL;
 		}
 		e->pred = PRED_PERM;
@@ -915,7 +937,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 	    strcmp(name, "-mtime") == 0) {
 		int field = name[1] == 'a' ? TF_ATIME : name[1] == 'c' ? TF_CTIME : TF_MTIME;
 		const char *arg = cur(ps);
-		struct expr *r = build_time_pred(ps, e, field, DAYSECS, arg);
+		struct expr *r = build_time_pred(ps, e, field, DAYSECS, name, arg);
 		if (r)
 			advance(ps);
 		return r;
@@ -924,7 +946,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 	    strcmp(name, "-mmin") == 0) {
 		int field = name[1] == 'a' ? TF_ATIME : name[1] == 'c' ? TF_CTIME : TF_MTIME;
 		const char *arg = cur(ps);
-		struct expr *r = build_time_pred(ps, e, field, 60, arg);
+		struct expr *r = build_time_pred(ps, e, field, 60, name, arg);
 		if (r)
 			advance(ps);
 		return r;
@@ -933,15 +955,14 @@ static struct expr *parse_predicate(struct pstate *ps)
 	    strcmp(name, "-cnewer") == 0) {
 		const char *arg = cur(ps);
 		if (!arg) {
-			ps->error = "missing argument";
-			ps->error_arg = name;
+			set_errorf(ps, "missing argument to `%s'", name);
 			return NULL;
 		}
 		advance(ps);
 		struct frt_statinfo si;
 		if (frt_stat_at(AT_FDCWD, arg, ps->opts->follow != 0, &si) != 0) {
-			ps->error = "cannot stat reference file";
-			ps->error_arg = arg;
+			int err = errno;
+			set_errorf(ps, "%s%s%s: %s", q_open(), arg, q_close(), strerror(err));
 			return NULL;
 		}
 		int field = name[1] == 'n' ? TF_MTIME : name[1] == 'a' ? TF_ATIME : TF_CTIME;
@@ -962,14 +983,12 @@ static struct expr *parse_predicate(struct pstate *ps)
 		int xf = X == 'a' ? TF_ATIME : X == 'c' ? TF_CTIME : X == 'm' ? TF_MTIME
 			 : X == 'B' ? TF_BTIME : -1;
 		if (xf < 0 || strchr("aBcmt", Y) == NULL) {
-			ps->error = "invalid -newerXY reference type";
-			ps->error_arg = name;
+			set_errorf(ps, "invalid predicate `%s'", name);
 			return NULL;
 		}
 		const char *arg = cur(ps);
 		if (!arg) {
-			ps->error = "missing argument";
-			ps->error_arg = name;
+			set_errorf(ps, "missing argument to `%s'", name);
 			return NULL;
 		}
 		advance(ps);
@@ -977,15 +996,17 @@ static struct expr *parse_predicate(struct pstate *ps)
 		long rnsec = 0;
 		if (Y == 't') {
 			if (parse_datetime_basic(arg, &rsec, &rnsec) != 0) {
-				ps->error = "invalid date/time argument";
-				ps->error_arg = arg;
+				set_errorf(ps, "I cannot figure out how to interpret "
+					       "%s%s%s as a date or time",
+					   q_open(), arg, q_close());
 				return NULL;
 			}
 		} else {
 			struct frt_statinfo si;
 			if (frt_stat_at(AT_FDCWD, arg, ps->opts->follow != 0, &si) != 0) {
-				ps->error = "cannot stat reference file";
-				ps->error_arg = arg;
+				int err = errno;
+				set_errorf(ps, "%s%s%s: %s", q_open(), arg, q_close(),
+					   strerror(err));
 				return NULL;
 			}
 			switch (Y) {
@@ -994,8 +1015,8 @@ static struct expr *parse_predicate(struct pstate *ps)
 			case 'm': rsec = si.mtime; rnsec = si.mtime_ns; break;
 			default: /* 'B' */
 				if (!si.have_btime) {
-					ps->error = "reference file has no birth time";
-					ps->error_arg = arg;
+					set_errorf(ps, "%s%s%s: birth time is not available "
+						       "for this file", q_open(), arg, q_close());
 					return NULL;
 				}
 				rsec = si.btime;
@@ -1032,12 +1053,15 @@ static struct expr *parse_predicate(struct pstate *ps)
 	if (strcmp(name, "-maxdepth") == 0 || strcmp(name, "-mindepth") == 0) {
 		int is_max = strcmp(name, "-maxdepth") == 0;
 		const char *arg = cur(ps);
+		if (!arg) {
+			set_errorf(ps, "missing argument to `%s'", name);
+			return NULL;
+		}
 		int v = parse_nonneg(arg);
 		if (v < 0) {
-			ps->error = is_max
-				? "Expected a positive decimal integer argument to -maxdepth"
-				: "Expected a positive decimal integer argument to -mindepth";
-			ps->error_arg = arg;
+			set_errorf(ps, "Expected a positive decimal integer argument "
+				       "to %s, but got %s%s%s",
+				   name, q_open(), arg, q_close());
 			return NULL;
 		}
 		advance(ps);
@@ -1108,7 +1132,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 	if (strcmp(name, "-printf") == 0) {
 		const char *arg = cur(ps);
 		if (!arg) {
-			ps->error = "missing argument to -printf";
+			set_errorf(ps, "missing argument to `%s'", name);
 			return NULL;
 		}
 		advance(ps);
@@ -1145,8 +1169,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 	    strcmp(name, "-fls") == 0 || strcmp(name, "-fprintf") == 0) {
 		const char *file = cur(ps);
 		if (!file) {
-			ps->error = "missing file argument";
-			ps->error_arg = name;
+			set_errorf(ps, "missing argument to `%s'", name);
 			return NULL;
 		}
 		advance(ps);
@@ -1154,7 +1177,8 @@ static struct expr *parse_predicate(struct pstate *ps)
 		if (strcmp(name, "-fprintf") == 0) {
 			const char *farg = cur(ps);
 			if (!farg) {
-				ps->error = "missing format argument to -fprintf";
+				/* file consumed, format missing: find blames the file */
+				set_errorf(ps, "invalid argument `%s' to `%s'", file, name);
 				return NULL;
 			}
 			advance(ps);
@@ -1167,8 +1191,8 @@ static struct expr *parse_predicate(struct pstate *ps)
 		}
 		struct outfile *dest = frt_outfile_open(file, ps->outfiles);
 		if (!dest) {
-			ps->error = "cannot open output file";
-			ps->error_arg = file;
+			int err = errno;
+			set_errorf(ps, "%s%s%s: %s", q_open(), file, q_close(), strerror(err));
 			return NULL;
 		}
 		e->pure = false;
@@ -1222,8 +1246,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 		return e;
 	}
 
-	ps->error = "unknown predicate";
-	ps->error_arg = name;
+	set_errorf(ps, "unknown predicate `%s'", name);
 	return NULL;
 }
 
@@ -1456,7 +1479,6 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 		.opts = &out->opts,
 		.outfiles = &out->outfiles,
 		.error = NULL,
-		.error_arg = NULL,
 		.has_action = false,
 		.full_days = 0,
 	};
@@ -1470,15 +1492,11 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 		expr = parse_comma(&ps);
 		if (!expr) {
 			out->error = ps.error ? ps.error : "invalid expression";
-			out->error_arg = ps.error_arg;
 			return -1;
 		}
 		if (ps.i < ps.argc) {
 			/* leftover tokens (e.g. a stray ')') */
 			out->error = ps.error ? ps.error : "invalid expression";
-			out->error_arg = cur(&ps);
-			if (!out->error_arg)
-				out->error_arg = NULL;
 			if (strcmp(argv[ps.i], ")") == 0)
 				out->error = "invalid expression; I was expecting to find a "
 					     "')' somewhere but did not see one.";
@@ -1505,7 +1523,6 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 			     "but -prune does nothing when -depth is in effect.  "
 			     "If you want to carry on anyway, just explicitly use "
 			     "the -depth option.";
-		out->error_arg = NULL;
 		return -1;
 	}
 	return 0;
