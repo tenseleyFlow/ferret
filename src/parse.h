@@ -13,6 +13,13 @@
 struct options {
 	int follow;   /* 0=-P (default), 1=-L, 2=-H */
 	int optlevel; /* -O level (default 3) */
+	int maxdepth; /* -1 = unlimited */
+	int mindepth; /* 0 = no floor */
+	int depth_first;          /* -depth / -d: post-order traversal */
+	int xdev;                 /* -xdev / -mount: do not cross device boundaries */
+	int noleaf;               /* -noleaf: disable leaf optimization (no-op for now) */
+	int ignore_readdir_race;  /* -ignore_readdir_race */
+	int warn;                 /* -warn / -nowarn (default off when non-interactive) */
 };
 
 struct parse_result {

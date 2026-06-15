@@ -31,6 +31,7 @@ enum expr_kind {
 /* Predicate/action identity (optimizer + -D debug; one per leaf). */
 enum pred_id {
 	PRED_NAME, PRED_INAME, PRED_TYPE, PRED_EMPTY, PRED_TRUE, PRED_FALSE,
+	PRED_PRUNE, PRED_OPTION,
 	ACT_PRINT, ACT_PRINT0,
 };
 
@@ -62,6 +63,7 @@ struct evalctx {
 	int out_fd;            /* where to drain the buffer (1 = stdout) */
 	struct arena *arena;   /* for lazy stat allocation */
 	int *exit_status;
+	bool prune;            /* set by -prune: walker skips descent into this dir */
 };
 
 /* stat-on-demand: fill ent->st (lstat or stat per follow), cached. NULL on

@@ -11,4 +11,8 @@ bool pred_empty(const struct expr *e, struct entry *ent, struct evalctx *ctx);
 bool pred_true(const struct expr *e, struct entry *ent, struct evalctx *ctx);
 bool pred_false(const struct expr *e, struct entry *ent, struct evalctx *ctx);
 
+/* -prune: returns true and signals the walker not to descend into this dir
+ * (no effect under -depth, handled by the walker). */
+bool pred_prune(const struct expr *e, struct entry *ent, struct evalctx *ctx);
+
 #endif /* FRT_PRED_H */

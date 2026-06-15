@@ -59,3 +59,11 @@ bool pred_false(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	(void)ctx;
 	return false;
 }
+
+bool pred_prune(const struct expr *e, struct entry *ent, struct evalctx *ctx)
+{
+	(void)e;
+	(void)ent;
+	ctx->prune = true;
+	return true;
+}

@@ -40,7 +40,9 @@ const struct frt_statinfo *entry_stat(struct entry *ent, struct evalctx *ctx)
 	}
 	ent->st = si;
 	ent->flags |= ENT_STATTED;
-	if (ent->type == FRT_UNKNOWN)
+	/* Under -L the followed (target) type is what predicates see — a symlink's
+	 * own type is irrelevant, so refine even when d_type already gave LNK. */
+	if (follow || ent->type == FRT_UNKNOWN)
 		ent->type = (uint16_t)frt_type_from_mode(si->mode);
 	ent->ino = si->ino;
 	ent->dev = si->dev;
