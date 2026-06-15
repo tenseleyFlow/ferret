@@ -60,7 +60,6 @@ struct expr {
 	float cost, prob;
 	bool needs_stat;        /* this leaf can trigger a stat */
 	bool pure;              /* no side effects (safe to reorder) */
-	bool no_default_print;  /* action that suppresses the implicit -print */
 
 	union {
 		struct { const char *pattern; unsigned glob_flags; } name;

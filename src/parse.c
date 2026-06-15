@@ -580,7 +580,6 @@ static struct expr *parse_exec(struct pstate *ps, struct expr *e, int execdir, i
 	e->pred = ACT_EXEC;
 	e->eval = act_exec;
 	e->pure = false;
-	e->no_default_print = true;
 	e->u.exec.tmpl = tmpl;
 	e->u.exec.ntmpl = ntmpl;
 	e->u.exec.multiple = (term == 2);
@@ -729,7 +728,10 @@ static struct expr *parse_predicate(struct pstate *ps)
 		struct frt_regex *re = frt_regex_compile(
 			arg, ps->opts->regextype, name[1] == 'i', ps->arena, &rerr);
 		if (!re) {
-			ps->error = rerr ? rerr : "invalid regular expression";
+			/* find's wrapper; the reason text comes from the system regex
+			 * engine and may read differently than gnulib's (deviations.md). */
+			set_errorf(ps, "failed to compile regular expression '%s': %s",
+				   arg, rerr ? rerr : "Invalid regular expression");
 			return NULL;
 		}
 		e->pred = PRED_REGEX;
@@ -1121,7 +1123,6 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->pred = zero ? ACT_PRINT0 : ACT_PRINT;
 		e->eval = act_print;
 		e->pure = false;
-		e->no_default_print = true;
 		e->u.pf.dest = NULL;
 		e->u.pf.zero = zero;
 		e->cost = COST_PRINT;
@@ -1145,7 +1146,6 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->pred = ACT_PRINTF;
 		e->eval = act_printf;
 		e->pure = false;
-		e->no_default_print = true;
 		e->u.pf.fmt = cf;
 		e->needs_stat = fmt_needs_stat(cf);
 		e->cost = COST_PRINT;
@@ -1157,7 +1157,6 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->pred = ACT_LS;
 		e->eval = act_ls;
 		e->pure = false;
-		e->no_default_print = true;
 		e->u.pf.dest = NULL;
 		e->needs_stat = true;
 		e->cost = COST_PRINT;
@@ -1196,7 +1195,6 @@ static struct expr *parse_predicate(struct pstate *ps)
 			return NULL;
 		}
 		e->pure = false;
-		e->no_default_print = true;
 		e->u.pf.dest = dest;
 		e->u.pf.fmt = cf;
 		e->cost = COST_PRINT;
@@ -1230,7 +1228,6 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->pred = ACT_DELETE;
 		e->eval = act_delete;
 		e->pure = false;
-		e->no_default_print = true;
 		e->cost = COST_STAT;
 		e->prob = 1.0f;
 		ps->has_action = true;
@@ -1250,9 +1247,20 @@ static struct expr *parse_predicate(struct pstate *ps)
 	return NULL;
 }
 
-/* ---- recursive descent (precedence: comma < or < and < not < primary) ------ */
+/* ---- recursive descent (precedence: comma < or < and < not < primary) ------
+ *
+ * `prev` threads the token immediately before the operand a level is parsing
+ * (the operator just consumed, a leading `!`, or `(`), so a missing operand can
+ * be reported find's way: a binary operator found where a primary is expected
+ * is "...with nothing before it"; running off the end names the previous token. */
 
-static struct expr *parse_comma(struct pstate *ps);
+static struct expr *parse_comma(struct pstate *ps, const char *prev);
+
+static bool is_binop(const char *t)
+{
+	return t && (tok_is(t, "-o", "-or") || tok_is(t, "-a", "-and") ||
+		     strcmp(t, ",") == 0);
+}
 
 static bool starts_primary(const char *t)
 {
@@ -1260,17 +1268,28 @@ static bool starts_primary(const char *t)
 		return false;
 	if (strcmp(t, ")") == 0)
 		return false;
-	if (tok_is(t, "-o", "-or") || tok_is(t, "-a", "-and") || strcmp(t, ",") == 0)
+	if (is_binop(t))
 		return false;
 	return true; /* "(", "!", "-not", or a predicate token */
 }
 
-static struct expr *parse_primary(struct pstate *ps)
+static struct expr *parse_primary(struct pstate *ps, const char *prev)
 {
 	const char *t = cur(ps);
 	if (strcmp(t ? t : "", "(") == 0) {
 		advance(ps);
-		struct expr *e = parse_comma(ps);
+		if (!cur(ps)) {
+			set_errorf(ps, "invalid expression; expected to find a ')' but "
+				       "didn't see one. Perhaps you need an extra "
+				       "predicate after '('");
+			return NULL;
+		}
+		if (strcmp(cur(ps), ")") == 0) {
+			set_errorf(ps, "invalid expression; empty parentheses are not "
+				       "allowed.");
+			return NULL;
+		}
+		struct expr *e = parse_comma(ps, "(");
 		if (!e)
 			return NULL;
 		if (!cur(ps) || strcmp(cur(ps), ")") != 0) {
@@ -1281,21 +1300,29 @@ static struct expr *parse_primary(struct pstate *ps)
 		advance(ps);
 		return e;
 	}
+	(void)prev;
 	return parse_predicate(ps);
 }
 
-static struct expr *parse_not(struct pstate *ps)
+static struct expr *parse_not(struct pstate *ps, const char *prev)
 {
 	int neg = 0;
 	while (cur(ps) && (strcmp(cur(ps), "!") == 0 || strcmp(cur(ps), "-not") == 0)) {
+		prev = cur(ps);
 		neg++;
 		advance(ps);
 	}
-	if (!starts_primary(cur(ps))) {
-		ps->error = "expected an expression after '!'";
+	const char *t = cur(ps);
+	if (!starts_primary(t)) {
+		if (is_binop(t))
+			set_errorf(ps, "invalid expression; you have used a binary "
+				       "operator '%s' with nothing before it.", t);
+		else
+			set_errorf(ps, "expected an expression after '%s'",
+				   prev ? prev : "(");
 		return NULL;
 	}
-	struct expr *e = parse_primary(ps);
+	struct expr *e = parse_primary(ps, prev);
 	if (!e)
 		return NULL;
 	for (int k = 0; k < neg; k++)
@@ -1303,22 +1330,23 @@ static struct expr *parse_not(struct pstate *ps)
 	return e;
 }
 
-static struct expr *parse_and(struct pstate *ps)
+static struct expr *parse_and(struct pstate *ps, const char *prev)
 {
-	struct expr *left = parse_not(ps);
+	struct expr *left = parse_not(ps, prev);
 	if (!left)
 		return NULL;
 	for (;;) {
 		const char *t = cur(ps);
 		if (tok_is(t, "-a", "-and")) {
+			const char *op = t;
 			advance(ps);
-			struct expr *right = parse_not(ps);
+			struct expr *right = parse_not(ps, op);
 			if (!right)
 				return NULL;
 			left = mk_binop(ps, EXPR_AND, left, right);
 		} else if (starts_primary(t)) {
 			/* juxtaposition = implicit AND */
-			struct expr *right = parse_not(ps);
+			struct expr *right = parse_not(ps, t);
 			if (!right)
 				return NULL;
 			left = mk_binop(ps, EXPR_AND, left, right);
@@ -1329,14 +1357,15 @@ static struct expr *parse_and(struct pstate *ps)
 	return left;
 }
 
-static struct expr *parse_or(struct pstate *ps)
+static struct expr *parse_or(struct pstate *ps, const char *prev)
 {
-	struct expr *left = parse_and(ps);
+	struct expr *left = parse_and(ps, prev);
 	if (!left)
 		return NULL;
 	while (tok_is(cur(ps), "-o", "-or")) {
+		const char *op = cur(ps);
 		advance(ps);
-		struct expr *right = parse_and(ps);
+		struct expr *right = parse_and(ps, op);
 		if (!right)
 			return NULL;
 		left = mk_binop(ps, EXPR_OR, left, right);
@@ -1344,14 +1373,15 @@ static struct expr *parse_or(struct pstate *ps)
 	return left;
 }
 
-static struct expr *parse_comma(struct pstate *ps)
+static struct expr *parse_comma(struct pstate *ps, const char *prev)
 {
-	struct expr *left = parse_or(ps);
+	struct expr *left = parse_or(ps, prev);
 	if (!left)
 		return NULL;
 	while (cur(ps) && strcmp(cur(ps), ",") == 0) {
+		const char *op = cur(ps);
 		advance(ps);
-		struct expr *right = parse_or(ps);
+		struct expr *right = parse_or(ps, op);
 		if (!right)
 			return NULL;
 		left = mk_binop(ps, EXPR_COMMA, left, right);
@@ -1367,7 +1397,6 @@ static struct expr *mk_print_leaf(struct pstate *ps)
 	e->pred = ACT_PRINT;
 	e->eval = act_print;
 	e->pure = false;
-	e->no_default_print = true;
 	e->cost = COST_PRINT;
 	e->prob = 1.0f;
 	return e;
@@ -1489,7 +1518,7 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 
 	struct expr *expr = NULL;
 	if (ps.i < ps.argc) {
-		expr = parse_comma(&ps);
+		expr = parse_comma(&ps, NULL);
 		if (!expr) {
 			out->error = ps.error ? ps.error : "invalid expression";
 			return -1;
