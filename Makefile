@@ -34,11 +34,17 @@ LDLIBS  += $(LDLIBS_OPT)
 # it makes a stray/abandoned .c in src/ a deliberate add, not a silent one.
 # Keep sorted; tests/run.sh asserts this list matches the filesystem.
 SRC = \
+	src/action.c \
 	src/arena.c \
 	src/dstr.c \
 	src/entry.c \
+	src/eval.c \
+	src/glob.c \
 	src/main.c \
+	src/parse.c \
+	src/pred.c \
 	src/util.c \
+	src/walk.c \
 	src/sys/dir.c \
 	src/sys/xstat.c
 OBJ = $(SRC:.c=.o)
