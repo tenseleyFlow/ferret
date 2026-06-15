@@ -224,6 +224,22 @@ static int dir_needs_stat(char c)
 	}
 }
 
+/* The directives find's make_segment accepts. Anything else is unrecognized:
+ * find warns and keeps the whole spec literal, and so do we. */
+static int dir_known(char c)
+{
+	switch (c) {
+	case '%': case 'a': case 'A': case 'b': case 'B': case 'c': case 'C':
+	case 'd': case 'D': case 'f': case 'F': case 'g': case 'G': case 'h':
+	case 'H': case 'i': case 'k': case 'l': case 'm': case 'M': case 'n':
+	case 'p': case 'P': case 's': case 'S': case 't': case 'T': case 'u':
+	case 'U': case 'y': case 'Y': case 'Z':
+		return 1;
+	default:
+		return 0;
+	}
+}
+
 struct fmt *fmt_compile(const char *format, struct arena *a, const char **errmsg)
 {
 	*errmsg = NULL;
@@ -279,7 +295,10 @@ struct fmt *fmt_compile(const char *format, struct arena *a, const char **errmsg
 				plain[plen++] = '\\';
 				continue;
 			default:
-				/* unknown escape: keep the backslash and the char */
+				/* unknown escape: warn (find does, at compile time) and
+				 * keep the backslash and the char literally. */
+				fprintf(stderr, "ferret: warning: unrecognized escape `\\%c'\n",
+					*p);
 				plain[plen++] = '\\';
 				plain[plen++] = *p;
 				p++;
@@ -314,6 +333,7 @@ struct fmt *fmt_compile(const char *format, struct arena *a, const char **errmsg
 			 * buffer the same way). No fixed cap, so pathological widths
 			 * like %99999999999p can't overflow; they reach snprintf
 			 * verbatim, exactly as find hands them to its printf. */
+			const char *spec_src = p;
 			const char *fp = p;
 			while (*fp == '-' || *fp == '+' || *fp == ' ' || *fp == '#' || *fp == '0')
 				fp++;
@@ -325,19 +345,51 @@ struct fmt *fmt_compile(const char *format, struct arena *a, const char **errmsg
 					fp++;
 			}
 			size_t fwlen = (size_t)(fp - p); /* flags+width+precision */
+			char dirc = fp[0];
+			/* find's directive dispatch: A/B/C/T take a trailing strftime
+			 * char; the rest of dir_known are single-char; '{', '[', '(' and a
+			 * directive cut off at end-of-string are fatal ("reserved for
+			 * future use"); anything else is unrecognized (warn, keep the whole
+			 * spec literal). */
+			int is_time = dirc == 'A' || dirc == 'B' || dirc == 'C' || dirc == 'T';
+			int len = is_time ? 2 : (dir_known(dirc) ? 1 : 0);
+			if (!len || !fp[len - 1]) {
+				if (dirc == '\0' || dirc == '{' || dirc == '[' || dirc == '(') {
+					char *m = arena_alloc(a, 64);
+					/* find prints a literal NUL byte here when the format
+					 * ends mid-directive; emit a clean message instead. */
+					if (dirc)
+						snprintf(m, 64, "error: the format directive "
+							 "`%%%c' is reserved for future use", dirc);
+					else
+						snprintf(m, 64, "error: the format directive "
+							 "`%%' is reserved for future use");
+					*errmsg = m;
+					return NULL;
+				}
+				if (is_time)
+					fprintf(stderr, "ferret: warning: format directive "
+						"`%%%c' should be followed by another "
+						"character\n", dirc);
+				else
+					fprintf(stderr, "ferret: warning: unrecognized "
+						"format directive `%%%c'\n", dirc);
+				plain[plen++] = '%';
+				memcpy(plain + plen, spec_src, fwlen);
+				plen += fwlen;
+				plain[plen++] = dirc;
+				p = fp + 1;
+				continue;
+			}
+			char aux = is_time ? fp[1] : 0;
 			char *spec = arena_alloc(a, fwlen + 3); /* '%' + span + conv + NUL */
 			size_t si = 0;
 			spec[si++] = '%';
 			memcpy(spec + si, p, fwlen);
 			si += fwlen;
-			p = fp;
-			char dirc = *p++;
-			char aux = 0;
-			if (dirc == 'A' || dirc == 'B' || dirc == 'C' || dirc == 'T') {
-				aux = *p ? *p++ : 0;
-			}
 			spec[si++] = dir_conv(dirc);
 			spec[si] = '\0';
+			p = fp + len; /* consume directive (+ strftime char if time) */
 
 			FLUSH_PLAIN();
 			struct segment *s = &f->segs[f->nseg++];
