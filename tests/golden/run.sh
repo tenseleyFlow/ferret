@@ -55,9 +55,34 @@ CASES='
 %C ( -name *.c -o -name *.dat )
 %C -name *.c , -name *.log
 %C -type f -a -name *.c
+%C -maxdepth 1
+%C -maxdepth 2
+%C -maxdepth 0
+%C -mindepth 1
+%C -mindepth 2
+%C -maxdepth 2 -mindepth 1
+%C -maxdepth 1 -type d
+%C -depth
+%C -depth -name *.c
+%C -d -type f
+%C -name sub -prune
+%C -name sub -prune -o -print
+%C -depth -name sub -prune
+%C -xdev
+%C -noleaf
+-L %C
+-L %C -type l
+-L %C -type d
+-L %C -type f
+-H %C
+-L %C -maxdepth 2
+-P %C -type l
 '
 
-normprog() { sed 's/^find: /PROG: /; s/^ferret: /PROG: /'; }
+# The reference binary is named find-<tag>, so it self-reports that as its program
+# name in diagnostics; normalize it (and ferret / plain find) to PROG.
+refbase=$(basename "$ref")
+normprog() { sed "s/^$refbase: /PROG: /; s/^ferret: /PROG: /; s/^find: /PROG: /"; }
 
 # run_case <binary> <case-string> -> writes o.out/o.err/o.rc in $work
 run_case() {
@@ -84,8 +109,9 @@ phase() {
 		cmp -s "$work/a.errn" "$work/o.errn" || ok=0
 		[ "$(cat "$work/a.rc")" = "$(cat "$work/o.rc")" ] || ok=0
 		if [ "$ok" = 0 ]; then
-			echo "  DIFF [$_label/$_loc]: $c"
+			echo "  DIFF [$_label/$_loc]: $c (rc a=$(cat "$work/a.rc") o=$(cat "$work/o.rc"))"
 			diff "$work/a.out" "$work/o.out" | head -8
+			diff "$work/a.errn" "$work/o.errn" | head -8
 			echo "$c" >>"$work/fails"
 		fi
 	done

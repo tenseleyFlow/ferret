@@ -94,6 +94,28 @@ int main(void)
 		CHECK("group: rhs leaf", e->rhs->kind == EXPR_LEAF);
 	}
 
+	/* positional options write into opts and parse as a true no-op leaf */
+	{
+		char *argv[] = {"ferret", ".", "-maxdepth", "3", "-mindepth", "1",
+				"-depth", "-xdev", "-name", "x"};
+		struct parse_result pr = parse(&a, 10, argv);
+		CHECK("maxdepth set", pr.opts.maxdepth == 3);
+		CHECK("mindepth set", pr.opts.mindepth == 1);
+		CHECK("depth_first set", pr.opts.depth_first == 1);
+		CHECK("xdev set", pr.opts.xdev == 1);
+	}
+	{
+		char *argv[] = {"ferret", "-L", ".", "-type", "f"};
+		struct parse_result pr = parse(&a, 5, argv);
+		CHECK("follow -L", pr.opts.follow == 1);
+	}
+	{
+		char *argv[] = {"ferret", ".", "-maxdepth", "notanumber"};
+		struct parse_result pr;
+		int rc = frt_parse(4, argv, &a, &pr);
+		CHECK("bad maxdepth fails", rc == -1 && pr.error != NULL);
+	}
+
 	/* unknown predicate -> error */
 	{
 		char *argv[] = {"ferret", ".", "-bogus"};
