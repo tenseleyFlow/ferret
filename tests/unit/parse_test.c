@@ -160,6 +160,34 @@ int main(void)
 				  e->u.num.val == 2);
 	}
 
+	/* -mtime +1: user GT is sense-inverted to COMP_LT; field mtime; window DAYSECS */
+	{
+		char *argv[] = {"ferret", ".", "-mtime", "+1"};
+		struct parse_result pr = parse(&a, 4, argv);
+		struct expr *e = pr.expr->lhs;
+		CHECK("time leaf", e->pred == PRED_TIME);
+		CHECK("mtime +1 inverted to LT", e->u.time.kind == COMP_LT);
+		CHECK("field mtime", e->u.time.field == TF_MTIME);
+		CHECK("window DAYSECS", e->u.time.window == 86400);
+	}
+	/* -amin -5: user LT -> GT; field atime; window 60 */
+	{
+		char *argv[] = {"ferret", ".", "-amin", "-5"};
+		struct parse_result pr = parse(&a, 4, argv);
+		struct expr *e = pr.expr->lhs;
+		CHECK("amin -5 inverted to GT", e->u.time.kind == COMP_GT);
+		CHECK("field atime", e->u.time.field == TF_ATIME);
+		CHECK("window 60", e->u.time.window == 60);
+	}
+	/* -newer FILE: direct GT comparison, window 0 */
+	{
+		char *argv[] = {"ferret", ".", "-newer", "."};
+		struct parse_result pr = parse(&a, 4, argv);
+		struct expr *e = pr.expr->lhs;
+		CHECK("newer GT", e->pred == PRED_TIME && e->u.time.kind == COMP_GT);
+		CHECK("newer window 0", e->u.time.window == 0);
+	}
+
 	/* unknown predicate -> error */
 	{
 		char *argv[] = {"ferret", ".", "-bogus"};

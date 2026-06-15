@@ -33,6 +33,10 @@ chmod 0600 "$dir/small.bin" 2>/dev/null || true
 chmod 0444 "$dir/beta/b1.dat" 2>/dev/null || true
 chmod 0755 "$dir/alpha/sub/deep.c" 2>/dev/null || true
 
+# pinned old mtimes (for -mtime/-newer parity — large margins, skew-robust)
+touch -t 202001010000 "$dir/old2020.txt" 2>/dev/null || true
+touch -t 201506150000 "$dir/old2015.txt" 2>/dev/null || true
+
 # symlinks: good (file), broken, dir, and a cycle to an ancestor (for -L loop tests)
 ln -s file.txt "$dir/good.link" 2>/dev/null || true
 ln -s nonexistent-target "$dir/broken.link" 2>/dev/null || true

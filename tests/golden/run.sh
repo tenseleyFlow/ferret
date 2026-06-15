@@ -102,6 +102,17 @@ CASES='
 %C -writable
 %C -type f -a -size +1k
 %C -size +1k -o -type d
+%C -mtime +30
+%C -mtime +100
+%C -atime +30
+%C -mmin +1440
+%C -newer %C/old2020.txt
+%C -newer %C/old2020.txt -type f
+%C -anewer %C/old2015.txt
+%C -newermt 2018-06-15
+%C -newermt @1000000000
+%C -newermm %C/old2020.txt
+%C -daystart -mtime +30
 '
 
 # The reference binary is named find-<tag>, so it self-reports that as its program
