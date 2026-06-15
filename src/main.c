@@ -5,6 +5,7 @@
 #include "action.h"
 #include "exec.h"
 #include "diag.h"
+#include "outfile.h"
 #include "arena.h"
 #include "dstr.h"
 
@@ -82,6 +83,7 @@ int main(int argc, char **argv)
 	frt_exec_flush_pending(pr.expr, &out, 1, &exit_status);
 
 	out_flush(&out, 1);
+	frt_outfile_flush_all(pr.outfiles); /* -fprint/-fprintf/-fls destinations */
 	dstr_free(&out);
 	arena_destroy(&arena);
 	return exit_status;

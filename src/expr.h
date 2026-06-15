@@ -17,7 +17,8 @@
 
 struct expr;
 struct evalctx;
-struct fmt; /* fmt.h */
+struct fmt;     /* fmt.h */
+struct outfile; /* outfile.h */
 
 typedef bool (*eval_fn)(const struct expr *e, struct entry *ent, struct evalctx *ctx);
 
@@ -36,7 +37,7 @@ enum pred_id {
 	PRED_SIZE, PRED_LINKS, PRED_INUM, PRED_UID, PRED_GID,
 	PRED_NOUSER, PRED_NOGROUP, PRED_SAMEFILE, PRED_PERM, PRED_ACCESS,
 	PRED_TIME,
-	ACT_PRINT, ACT_PRINT0, ACT_EXEC, ACT_DELETE, ACT_QUIT, ACT_PRINTF,
+	ACT_PRINT, ACT_PRINT0, ACT_EXEC, ACT_DELETE, ACT_QUIT, ACT_PRINTF, ACT_LS,
 };
 
 /* Numeric comparison form for +N / -N / N arguments. */
@@ -84,9 +85,9 @@ struct expr {
 			struct exec_batch *batch; /* + accumulator (heap), else NULL */
 		} exec;
 		struct {
-			struct fmt *fmt;  /* compiled -printf/-fprintf/-fls format */
-			int newline;      /* append '\n' (-fprint) / NUL (-fprint0) */
-			int zero;         /* -fprint0 / -print0 style NUL terminator */
+			struct fmt *fmt;      /* -printf/-fprintf compiled format (NULL otherwise) */
+			struct outfile *dest; /* -f* destination file; NULL = stdout */
+			int zero;             /* -print0/-fprint0 NUL terminator */
 		} pf;
 	} u;
 };

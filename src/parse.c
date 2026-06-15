@@ -4,6 +4,7 @@
 #include "exec.h"
 #include "fmt.h"
 #include "glob.h"
+#include "outfile.h"
 #include "sys/xstat.h"
 
 #include <fcntl.h>
@@ -29,7 +30,8 @@ struct pstate {
 	int argc;
 	int i;
 	struct arena *arena;
-	struct options *opts;  /* positional options write here */
+	struct options *opts;     /* positional options write here */
+	struct outfile **outfiles; /* -f* destination registry */
 	const char *error;     /* set on failure */
 	const char *error_arg; /* offending token, if any */
 	bool has_action;       /* any action seen => suppress implicit -print */
@@ -900,9 +902,11 @@ static struct expr *parse_predicate(struct pstate *ps)
 	if (strcmp(name, "-print") == 0 || strcmp(name, "-print0") == 0) {
 		bool zero = strcmp(name, "-print0") == 0;
 		e->pred = zero ? ACT_PRINT0 : ACT_PRINT;
-		e->eval = zero ? act_print0 : act_print;
+		e->eval = act_print;
 		e->pure = false;
 		e->no_default_print = true;
+		e->u.pf.dest = NULL;
+		e->u.pf.zero = zero;
 		e->cost = COST_PRINT;
 		e->prob = 1.0f;
 		ps->has_action = true;
@@ -930,6 +934,70 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->cost = COST_PRINT;
 		e->prob = 1.0f;
 		ps->has_action = true;
+		return e;
+	}
+	if (strcmp(name, "-ls") == 0) {
+		e->pred = ACT_LS;
+		e->eval = act_ls;
+		e->pure = false;
+		e->no_default_print = true;
+		e->u.pf.dest = NULL;
+		e->needs_stat = true;
+		e->cost = COST_PRINT;
+		e->prob = 1.0f;
+		ps->has_action = true;
+		return e;
+	}
+	if (strcmp(name, "-fprint") == 0 || strcmp(name, "-fprint0") == 0 ||
+	    strcmp(name, "-fls") == 0 || strcmp(name, "-fprintf") == 0) {
+		const char *file = cur(ps);
+		if (!file) {
+			ps->error = "missing file argument";
+			ps->error_arg = name;
+			return NULL;
+		}
+		advance(ps);
+		struct fmt *cf = NULL;
+		if (strcmp(name, "-fprintf") == 0) {
+			const char *farg = cur(ps);
+			if (!farg) {
+				ps->error = "missing format argument to -fprintf";
+				return NULL;
+			}
+			advance(ps);
+			const char *ferr = NULL;
+			cf = fmt_compile(farg, ps->arena, &ferr);
+			if (!cf) {
+				ps->error = ferr ? ferr : "invalid -fprintf format";
+				return NULL;
+			}
+		}
+		struct outfile *dest = frt_outfile_open(file, ps->outfiles);
+		if (!dest) {
+			ps->error = "cannot open output file";
+			ps->error_arg = file;
+			return NULL;
+		}
+		e->pure = false;
+		e->no_default_print = true;
+		e->u.pf.dest = dest;
+		e->u.pf.fmt = cf;
+		e->cost = COST_PRINT;
+		e->prob = 1.0f;
+		ps->has_action = true;
+		if (strcmp(name, "-fls") == 0) {
+			e->pred = ACT_LS;
+			e->eval = act_ls;
+			e->needs_stat = true;
+		} else if (strcmp(name, "-fprintf") == 0) {
+			e->pred = ACT_PRINTF;
+			e->eval = act_printf;
+			e->needs_stat = fmt_needs_stat(cf);
+		} else {
+			e->pred = ACT_PRINT;
+			e->eval = act_print;
+			e->u.pf.zero = (strcmp(name, "-fprint0") == 0);
+		}
 		return e;
 	}
 	if (strcmp(name, "-exec") == 0)
@@ -1152,6 +1220,7 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 		.i = i,
 		.arena = arena,
 		.opts = &out->opts,
+		.outfiles = &out->outfiles,
 		.error = NULL,
 		.error_arg = NULL,
 		.has_action = false,

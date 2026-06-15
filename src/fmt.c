@@ -1,6 +1,7 @@
 #include "fmt.h"
 #include "eval.h"
 #include "action.h"
+#include "outfile.h"
 #include "util.h"
 #include "sys/xstat.h"
 
@@ -576,7 +577,8 @@ static void render_dir(const struct segment *s, struct entry *ent, struct evalct
 	}
 }
 
-void fmt_render(const struct fmt *f, struct entry *ent, struct evalctx *ctx, struct dstr *out)
+void fmt_render(const struct fmt *f, struct entry *ent, struct evalctx *ctx, struct dstr *out,
+		int out_fd)
 {
 	for (int i = 0; i < f->nseg; i++) {
 		const struct segment *s = &f->segs[i];
@@ -584,7 +586,7 @@ void fmt_render(const struct fmt *f, struct entry *ent, struct evalctx *ctx, str
 			dstr_append(out, s->text, s->len);
 		} else if (s->kind == SEG_STOP) {
 			/* \c : flush output and stop processing this format. */
-			out_flush(out, ctx->out_fd);
+			out_flush(out, out_fd);
 			return;
 		} else {
 			render_dir(s, ent, ctx, out);
@@ -594,7 +596,132 @@ void fmt_render(const struct fmt *f, struct entry *ent, struct evalctx *ctx, str
 
 bool act_printf(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 {
-	fmt_render(e->u.pf.fmt, ent, ctx, ctx->out);
-	out_maybe_flush(ctx);
+	struct dstr *out = frt_out_dest(e, ctx);
+	int fd = e->u.pf.dest ? e->u.pf.dest->fd : ctx->out_fd;
+	fmt_render(e->u.pf.fmt, ent, ctx, out, fd);
+	if (!e->u.pf.dest)
+		out_maybe_flush(ctx);
+	return true;
+}
+
+/* -ls / -fls column widths — static, shared across all -ls actions, grown as
+ * files are listed (find/lib/listfile.c defaults). */
+static int ls_w_ino = 9, ls_w_blk = 6, ls_w_nlink = 3, ls_w_owner = 8;
+static int ls_w_group = 8, ls_w_size = 8;
+static time_t ls_now;
+
+/* -ls name quoting (find listfile.c print_name_with_quoting): backslash a few
+ * specials and space/quote, octal-escape non-printable/non-ASCII bytes. */
+static void ls_quote(struct dstr *out, const char *p, size_t len)
+{
+	for (size_t i = 0; i < len; i++) {
+		unsigned char c = (unsigned char)p[i];
+		switch (c) {
+		case '\\': dstr_appendz(out, "\\\\"); break;
+		case '\n': dstr_appendz(out, "\\n"); break;
+		case '\b': dstr_appendz(out, "\\b"); break;
+		case '\r': dstr_appendz(out, "\\r"); break;
+		case '\t': dstr_appendz(out, "\\t"); break;
+		case '\f': dstr_appendz(out, "\\f"); break;
+		case ' ':  dstr_appendz(out, "\\ "); break;
+		case '"':  dstr_appendz(out, "\\\""); break;
+		default:
+			if (c > 040 && c < 0177) {
+				dstr_appendc(out, (char)c);
+			} else {
+				char o[8];
+				snprintf(o, sizeof o, "\\%03o", c);
+				dstr_appendz(out, o);
+			}
+		}
+	}
+}
+
+static void ls_num_right(struct dstr *out, int *width, unsigned long long v)
+{
+	char num[32];
+	int len = snprintf(num, sizeof num, "%llu", v);
+	char field[80];
+	int n = snprintf(field, sizeof field, "%*s", *width, num);
+	if (n > 0)
+		dstr_append(out, field, (size_t)n);
+	if (len > *width)
+		*width = len;
+}
+
+bool act_ls(const struct expr *e, struct entry *ent, struct evalctx *ctx)
+{
+	const struct frt_statinfo *st = entry_stat(ent, ctx);
+	if (!st)
+		return true; /* find lists nothing for an unstattable entry */
+	struct dstr *out = frt_out_dest(e, ctx);
+
+	if (ls_now == 0)
+		ls_now = time(NULL);
+
+	ls_num_right(out, &ls_w_ino, (unsigned long long)ent->ino);
+	dstr_appendc(out, ' ');
+	ls_num_right(out, &ls_w_blk, (unsigned long long)((st->blocks + 1) / 2)); /* 1K blocks */
+	dstr_appendc(out, ' ');
+
+	char ms[16];
+	filemodestring(st->mode, ms);
+	dstr_appendz(out, ms);
+	dstr_appendc(out, ' '); /* alternate-access-method flag slot */
+
+	ls_num_right(out, &ls_w_nlink, (unsigned long long)st->nlink);
+	dstr_appendc(out, ' ');
+
+	char buf[128];
+	struct passwd *pw = getpwuid(st->uid);
+	if (pw) {
+		int len = (int)strlen(pw->pw_name);
+		if (len > ls_w_owner)
+			ls_w_owner = len;
+		snprintf(buf, sizeof buf, "%-*s ", ls_w_owner, pw->pw_name);
+	} else {
+		snprintf(buf, sizeof buf, "%-8llu ", (unsigned long long)st->uid);
+	}
+	dstr_appendz(out, buf);
+
+	struct group *gr = getgrgid(st->gid);
+	if (gr) {
+		int len = (int)strlen(gr->gr_name);
+		if (len > ls_w_group)
+			ls_w_group = len;
+		snprintf(buf, sizeof buf, "%-*s ", ls_w_group, gr->gr_name);
+	} else {
+		snprintf(buf, sizeof buf, "%-*llu ", ls_w_group, (unsigned long long)st->gid);
+	}
+	dstr_appendz(out, buf);
+
+	ls_num_right(out, &ls_w_size, (unsigned long long)st->size);
+	dstr_appendc(out, ' ');
+
+	struct tm *lt = localtime(&st->mtime);
+	if (lt) {
+		const char *fmt = (ls_now - 6 * 30 * 24 * 60 * 60 <= st->mtime &&
+				   st->mtime <= ls_now + 60 * 60)
+					  ? "%b %e %H:%M"
+					  : "%b %e  %Y";
+		char db[128];
+		strftime(db, sizeof db, fmt, lt);
+		dstr_appendz(out, db);
+		dstr_appendc(out, ' ');
+	}
+
+	ls_quote(out, ent->path, ent->pathlen);
+
+	if (ent->type == FRT_LNK) {
+		char link[4096];
+		ssize_t r = readlinkat(ctx->dirfd, ctx->statname, link, sizeof link - 1);
+		if (r >= 0) {
+			dstr_appendz(out, " -> ");
+			ls_quote(out, link, (size_t)r);
+		}
+	}
+	dstr_appendc(out, '\n');
+	if (!e->u.pf.dest)
+		out_maybe_flush(ctx);
 	return true;
 }

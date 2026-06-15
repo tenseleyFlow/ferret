@@ -1,5 +1,6 @@
 #include "action.h"
 #include "diag.h"
+#include "outfile.h"
 #include "sys/dir.h"
 
 #include <errno.h>
@@ -28,21 +29,20 @@ void out_maybe_flush(struct evalctx *ctx)
 		out_flush(ctx->out, ctx->out_fd);
 }
 
-bool act_print(const struct expr *e, struct entry *ent, struct evalctx *ctx)
+/* Destination buffer for an output action: a -f* file, or the stdout buffer. */
+struct dstr *frt_out_dest(const struct expr *e, struct evalctx *ctx)
 {
-	(void)e;
-	dstr_append(ctx->out, ent->path, ent->pathlen);
-	dstr_appendc(ctx->out, '\n');
-	out_maybe_flush(ctx);
-	return true;
+	return e->u.pf.dest ? &e->u.pf.dest->buf : ctx->out;
 }
 
-bool act_print0(const struct expr *e, struct entry *ent, struct evalctx *ctx)
+/* -print / -print0 / -fprint / -fprint0 : the path + a newline or NUL. */
+bool act_print(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 {
-	(void)e;
-	dstr_append(ctx->out, ent->path, ent->pathlen);
-	dstr_appendc(ctx->out, '\0');
-	out_maybe_flush(ctx);
+	struct dstr *out = frt_out_dest(e, ctx);
+	dstr_append(out, ent->path, ent->pathlen);
+	dstr_appendc(out, e->u.pf.zero ? '\0' : '\n');
+	if (!e->u.pf.dest)
+		out_maybe_flush(ctx);
 	return true;
 }
 

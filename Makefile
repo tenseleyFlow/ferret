@@ -44,6 +44,7 @@ SRC = \
 	src/fmt.c \
 	src/glob.c \
 	src/main.c \
+	src/outfile.c \
 	src/parse.c \
 	src/pred.c \
 	src/util.c \

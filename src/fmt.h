@@ -21,10 +21,12 @@ struct fmt *fmt_compile(const char *format, struct arena *a, const char **errmsg
 /* 1 if any directive needs a stat (drives the optimizer's needs_stat). */
 int fmt_needs_stat(const struct fmt *f);
 
-/* Render the compiled format for `ent` into `out`. */
-void fmt_render(const struct fmt *f, struct entry *ent, struct evalctx *ctx, struct dstr *out);
+/* Render the compiled format for `ent` into `out`; out_fd is where \c flushes. */
+void fmt_render(const struct fmt *f, struct entry *ent, struct evalctx *ctx, struct dstr *out,
+		int out_fd);
 
-/* Action eval for -printf (renders e->u.pf.fmt to the output buffer). */
+/* Action evals for -printf/-fprintf and -ls/-fls (destination from e->u.pf). */
 bool act_printf(const struct expr *e, struct entry *ent, struct evalctx *ctx);
+bool act_ls(const struct expr *e, struct entry *ent, struct evalctx *ctx);
 
 #endif /* FRT_FMT_H */
