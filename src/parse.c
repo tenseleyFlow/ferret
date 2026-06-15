@@ -1298,6 +1298,24 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 			   a[3] == '\0') {
 			out->opts.optlevel = a[2] - '0';
 			i++;
+		} else if (strcmp(a, "-D") == 0 && i + 1 < argc) {
+			const char *d = argv[i + 1];
+			/* comma-separated debug words; we honor tree/opt/all, accept
+			 * the rest (help/search/stat/rates/exec/time) as no-ops. */
+			for (const char *p = d; *p;) {
+				const char *q = p;
+				while (*q && *q != ',')
+					q++;
+				size_t len = (size_t)(q - p);
+				if (len == 4 && strncmp(p, "tree", 4) == 0)
+					out->opts.debug |= FRT_DBG_TREE;
+				else if (len == 3 && strncmp(p, "opt", 3) == 0)
+					out->opts.debug |= FRT_DBG_OPT;
+				else if (len == 3 && strncmp(p, "all", 3) == 0)
+					out->opts.debug |= FRT_DBG_TREE | FRT_DBG_OPT;
+				p = *q ? q + 1 : q;
+			}
+			i += 2;
 		} else {
 			break;
 		}

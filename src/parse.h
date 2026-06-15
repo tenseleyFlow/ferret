@@ -21,6 +21,12 @@ struct options {
 	int ignore_readdir_race;  /* -ignore_readdir_race */
 	int warn;                 /* -warn / -nowarn (default off when non-interactive) */
 	int regextype;            /* -regextype: enum frt_regextype (default emacs) */
+	unsigned debug;           /* -D bits: FRT_DBG_* */
+};
+
+enum {
+	FRT_DBG_TREE = 1u << 0, /* dump the parsed expression */
+	FRT_DBG_OPT  = 1u << 1, /* dump the optimized expression */
 };
 
 struct parse_result {

@@ -6,6 +6,7 @@
 #include "exec.h"
 #include "diag.h"
 #include "outfile.h"
+#include "opt.h"
 #include "arena.h"
 #include "dstr.h"
 
@@ -70,6 +71,12 @@ int main(int argc, char **argv)
 		arena_destroy(&arena);
 		return 1;
 	}
+
+	if (pr.opts.debug & FRT_DBG_TREE)
+		frt_expr_dump(pr.expr, "tree");
+	pr.expr = frt_optimize(pr.expr, pr.opts.optlevel, &arena);
+	if (pr.opts.debug & FRT_DBG_OPT)
+		frt_expr_dump(pr.expr, "opt");
 
 	struct dstr out;
 	dstr_init(&out);
