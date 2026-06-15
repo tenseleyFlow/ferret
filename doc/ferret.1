@@ -1,0 +1,27 @@
+.TH FERRET 1 "2026" "ferret 0.1.0-dev" "User Commands"
+.SH NAME
+ferret, frt \- fast, byte-for-byte GNU find(1) clone
+.SH SYNOPSIS
+.B ferret
+.RI [ path ...]
+.RI [ expression ]
+.SH DESCRIPTION
+.B ferret
+is a from-scratch C reimplementation of GNU
+.BR find (1).
+For a given expression and filesystem state its output matches GNU find 4.10.0
+byte for byte, and it is faster on the workloads measured.
+.PP
+The man page is filled in as the predicate and action surface lands (sprint 11);
+see the GNU
+.BR find (1)
+manual for the expression language.
+.SH EXIT STATUS
+.B 0
+all operands processed successfully;
+.B 1
+an error occurred (a bad command line or a runtime failure on a file).
+.SH SEE ALSO
+.BR find (1)
+.SH AUTHORS
+The ferret authors.

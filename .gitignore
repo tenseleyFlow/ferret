@@ -1,1 +1,16 @@
+# planning + local guidance (kept local, like aspen)
 .docs/
+CLAUDE.md
+
+# build artifacts
+/ferret
+/frt
+*.o
+*.d
+config.mk
+config.h
+
+# test/bench scratch
+/tests/.work/
+/bench/.work/
+*.core
