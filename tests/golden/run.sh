@@ -127,6 +127,24 @@ CASES='
 %C -quit
 %C -print -quit
 %C -name b1.dat -quit
+%C -printf %p\n
+%C -printf %f|%h\n
+%C -printf %P=%d:%y\n
+%C -printf %H|%p\n
+%C -type f -printf %s|%m|%M\n
+%C -printf %i|%n\n
+%C -type f -printf %u|%g|%U|%G\n
+%C -printf %y|%Y\n
+%C -type l -printf %p->%l\n
+%C -printf [%-20p]\n
+%C -printf pct%%done\t%p\n
+%C/old2020.txt -printf %t\n
+%C/old2020.txt -printf %a|%c\n
+%C/old2020.txt -printf %T@\n
+%C/old2020.txt -printf %TY-%Tm-%TdT%TH:%TM:%TS\n
+%C/old2020.txt -printf %Tc|%T+\n
+%C/old2015.txt -printf %AY-%Am-%Ad|%Cj\n
+%C -type f -printf %S\n
 '
 
 # The reference binary is named find-<tag>, so it self-reports that as its program
