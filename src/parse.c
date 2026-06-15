@@ -10,6 +10,7 @@
 
 #include <fcntl.h>
 #include <grp.h>
+#include <limits.h>
 #include <pwd.h>
 #include <stdlib.h>
 #include <string.h>
@@ -129,8 +130,10 @@ static int parse_nonneg(const char *s)
 	return v;
 }
 
-/* Parse +N / -N / N into a comparison kind and value. Returns 0 / -1. */
-static int parse_num_arg(const char *s, int *kind, long long *val)
+/* Parse +N / -N / N into a comparison kind and value. Returns 0 / -1. find
+ * parses the magnitude as uintmax_t (xstrtoumax), so the limit is ULLONG_MAX;
+ * anything larger is rejected, not silently wrapped. */
+static int parse_num_arg(const char *s, int *kind, unsigned long long *val)
 {
 	if (!s || !*s)
 		return -1;
@@ -144,11 +147,14 @@ static int parse_num_arg(const char *s, int *kind, long long *val)
 	}
 	if (!*s)
 		return -1;
-	long long v = 0;
+	unsigned long long v = 0;
 	for (const char *p = s; *p; p++) {
 		if (*p < '0' || *p > '9')
 			return -1;
-		v = v * 10 + (*p - '0');
+		unsigned d = (unsigned)(*p - '0');
+		if (v > (ULLONG_MAX - d) / 10)
+			return -1; /* overflow */
+		v = v * 10 + d;
 	}
 	*val = v;
 	return 0;
@@ -156,7 +162,7 @@ static int parse_num_arg(const char *s, int *kind, long long *val)
 
 /* Parse a -size argument: [+-]N[bcwkMG]. Returns 0, -1 (bad number), -2 (bad
  * suffix). On bad suffix, *suffix is the offending char. */
-static int parse_size_arg(const char *s, int *kind, long long *val, long long *unit, char *suffix)
+static int parse_size_arg(const char *s, int *kind, unsigned long long *val, long long *unit, char *suffix)
 {
 	if (!s || !*s)
 		return -1;
@@ -171,9 +177,13 @@ static int parse_size_arg(const char *s, int *kind, long long *val, long long *u
 	}
 	if (*p < '0' || *p > '9')
 		return -1;
-	long long v = 0;
-	while (*p >= '0' && *p <= '9')
-		v = v * 10 + (*p++ - '0');
+	unsigned long long v = 0;
+	while (*p >= '0' && *p <= '9') {
+		unsigned d = (unsigned)(*p++ - '0');
+		if (v > (ULLONG_MAX - d) / 10)
+			return -1; /* overflow: find rejects via get_num */
+		v = v * 10 + d;
+	}
 	long long u = 512; /* default suffix 'b' = 512-byte blocks */
 	if (*p) {
 		switch (*p) {
@@ -650,7 +660,8 @@ static struct expr *parse_predicate(struct pstate *ps)
 			return NULL;
 		}
 		int kind;
-		long long val, unit;
+		unsigned long long val;
+		long long unit;
 		char bad = 0;
 		int rc = parse_size_arg(arg, &kind, &val, &unit, &bad);
 		if (rc == -2) {
@@ -681,7 +692,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 	    strcmp(name, "-uid") == 0 || strcmp(name, "-gid") == 0) {
 		const char *arg = cur(ps);
 		int kind;
-		long long val;
+		unsigned long long val;
 		if (!arg || parse_num_arg(arg, &kind, &val) != 0) {
 			ps->error = "non-numeric argument";
 			ps->error_arg = name;
@@ -748,7 +759,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->pred = is_user ? PRED_UID : PRED_GID;
 		e->needs_stat = true;
 		e->u.num.kind = COMP_EQ;
-		e->u.num.val = id;
+		e->u.num.val = (unsigned long long)id;
 		e->cost = COST_STAT;
 		e->prob = 0.5f;
 		return e;

@@ -79,7 +79,9 @@ bool pred_prune(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	return true;
 }
 
-static bool num_cmp(int kind, long long lhs, long long rhs)
+/* find compares as uintmax_t (the stored value and the file's stat field are
+ * both non-negative), so use unsigned arithmetic to match it exactly. */
+static bool num_cmp(int kind, unsigned long long lhs, unsigned long long rhs)
 {
 	switch (kind) {
 	case COMP_GT: return lhs > rhs;
@@ -94,8 +96,8 @@ bool pred_size(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	if (!st)
 		return false;
 	/* size compared in blocks of `unit`, rounded UP (a 1.5k file is -size 2k). */
-	long long unit = e->u.size.unit;
-	long long blocks = ((long long)st->size + unit - 1) / unit;
+	unsigned long long unit = (unsigned long long)e->u.size.unit;
+	unsigned long long blocks = ((unsigned long long)st->size + unit - 1) / unit;
 	return num_cmp(e->u.size.kind, blocks, e->u.size.val);
 }
 
@@ -104,7 +106,7 @@ bool pred_links(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	const struct frt_statinfo *st = entry_stat(ent, ctx);
 	if (!st)
 		return false;
-	return num_cmp(e->u.num.kind, (long long)st->nlink, e->u.num.val);
+	return num_cmp(e->u.num.kind, (unsigned long long)st->nlink, e->u.num.val);
 }
 
 bool pred_inum(const struct expr *e, struct entry *ent, struct evalctx *ctx)
@@ -112,7 +114,7 @@ bool pred_inum(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	const struct frt_statinfo *st = entry_stat(ent, ctx);
 	if (!st)
 		return false;
-	return num_cmp(e->u.num.kind, (long long)st->ino, e->u.num.val);
+	return num_cmp(e->u.num.kind, (unsigned long long)st->ino, e->u.num.val);
 }
 
 bool pred_uid(const struct expr *e, struct entry *ent, struct evalctx *ctx)
@@ -120,7 +122,7 @@ bool pred_uid(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	const struct frt_statinfo *st = entry_stat(ent, ctx);
 	if (!st)
 		return false;
-	return num_cmp(e->u.num.kind, (long long)st->uid, e->u.num.val);
+	return num_cmp(e->u.num.kind, (unsigned long long)st->uid, e->u.num.val);
 }
 
 bool pred_gid(const struct expr *e, struct entry *ent, struct evalctx *ctx)
@@ -128,7 +130,7 @@ bool pred_gid(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	const struct frt_statinfo *st = entry_stat(ent, ctx);
 	if (!st)
 		return false;
-	return num_cmp(e->u.num.kind, (long long)st->gid, e->u.num.val);
+	return num_cmp(e->u.num.kind, (unsigned long long)st->gid, e->u.num.val);
 }
 
 bool pred_nouser(const struct expr *e, struct entry *ent, struct evalctx *ctx)
