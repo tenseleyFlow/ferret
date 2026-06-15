@@ -77,6 +77,31 @@ CASES='
 -H %C
 -L %C -maxdepth 2
 -P %C -type l
+%C -size +1k
+%C -size -1k
+%C -size 0
+%C -size 100c
+%C -size +99c
+%C -size 3b
+%C -perm 644
+%C -perm 600
+%C -perm -644
+%C -perm /222
+%C -perm -0
+%C -perm -u+r
+%C -links 2
+%C -links +1
+%C -links 1
+%C -uid %U
+%C -gid %G
+%C -uid +0
+%C -nouser
+%C -nogroup
+%C -samefile %C/small.bin
+%C -readable
+%C -writable
+%C -type f -a -size +1k
+%C -size +1k -o -type d
 '
 
 # The reference binary is named find-<tag>, so it self-reports that as its program
@@ -84,10 +109,14 @@ CASES='
 refbase=$(basename "$ref")
 normprog() { sed "s/^$refbase: /PROG: /; s/^ferret: /PROG: /; s/^find: /PROG: /"; }
 
+# %U/%G expand to the current uid/gid (deterministic per machine; both tools agree)
+me_uid=$(id -u)
+me_gid=$(id -g)
+
 # run_case <binary> <case-string> -> writes o.out/o.err/o.rc in $work
 run_case() {
 	_bin=$1; _case=$2
-	_expanded=$(printf '%s' "$_case" | sed "s#%C#$corpus#g")
+	_expanded=$(printf '%s' "$_case" | sed "s#%C#$corpus#g; s#%U#$me_uid#g; s#%G#$me_gid#g")
 	# shellcheck disable=SC2086
 	set -- $_expanded
 	"$_bin" "$@" >"$work/o.out" 2>"$work/o.err"

@@ -24,6 +24,15 @@ mkdir -p "$dir/a dir with spaces"
 : > "$dir/a dir with spaces/inside.txt"
 : > "$dir/naïve.txt"
 
+# sized files + pinned perms + a hardlink (for -size/-perm/-links parity)
+head -c 1536 /dev/zero > "$dir/big.bin" 2>/dev/null || true
+head -c 100 /dev/zero > "$dir/small.bin" 2>/dev/null || true
+ln "$dir/small.bin" "$dir/small.hardlink" 2>/dev/null || true
+chmod 0644 "$dir/big.bin" 2>/dev/null || true
+chmod 0600 "$dir/small.bin" 2>/dev/null || true
+chmod 0444 "$dir/beta/b1.dat" 2>/dev/null || true
+chmod 0755 "$dir/alpha/sub/deep.c" 2>/dev/null || true
+
 # symlinks: good (file), broken, dir, and a cycle to an ancestor (for -L loop tests)
 ln -s file.txt "$dir/good.link" 2>/dev/null || true
 ln -s nonexistent-target "$dir/broken.link" 2>/dev/null || true

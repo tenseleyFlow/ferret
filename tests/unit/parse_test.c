@@ -116,6 +116,50 @@ int main(void)
 		CHECK("bad maxdepth fails", rc == -1 && pr.error != NULL);
 	}
 
+	/* -size payload: +1k -> GT, val 1, unit 1024 */
+	{
+		char *argv[] = {"ferret", ".", "-size", "+1k"};
+		struct parse_result pr = parse(&a, 4, argv);
+		struct expr *e = pr.expr->lhs; /* under implicit-print AND */
+		CHECK("size leaf", e->kind == EXPR_LEAF && e->pred == PRED_SIZE);
+		CHECK("size GT", e->u.size.kind == COMP_GT);
+		CHECK("size val", e->u.size.val == 1);
+		CHECK("size unit 1024", e->u.size.unit == 1024);
+		CHECK("size needs_stat", e->needs_stat);
+	}
+	/* -perm octal exact */
+	{
+		char *argv[] = {"ferret", ".", "-perm", "644"};
+		struct parse_result pr = parse(&a, 4, argv);
+		struct expr *e = pr.expr->lhs;
+		CHECK("perm exact", e->pred == PRED_PERM && e->u.perm.match == PERM_EXACT);
+		CHECK("perm mode 0644", e->u.perm.mode == 0644);
+	}
+	/* -perm -u+x (all-bits, symbolic) */
+	{
+		char *argv[] = {"ferret", ".", "-perm", "-u+x"};
+		struct parse_result pr = parse(&a, 4, argv);
+		struct expr *e = pr.expr->lhs;
+		CHECK("perm all", e->u.perm.match == PERM_ALL);
+		CHECK("perm u+x = 0100", e->u.perm.mode == 0100);
+	}
+	/* -perm /222 (any-bits) */
+	{
+		char *argv[] = {"ferret", ".", "-perm", "/222"};
+		struct parse_result pr = parse(&a, 4, argv);
+		struct expr *e = pr.expr->lhs;
+		CHECK("perm any", e->u.perm.match == PERM_ANY);
+		CHECK("perm /222 = 0222", e->u.perm.mode == 0222);
+	}
+	/* -links -2 -> LT */
+	{
+		char *argv[] = {"ferret", ".", "-links", "-2"};
+		struct parse_result pr = parse(&a, 4, argv);
+		struct expr *e = pr.expr->lhs;
+		CHECK("links LT", e->pred == PRED_LINKS && e->u.num.kind == COMP_LT &&
+				  e->u.num.val == 2);
+	}
+
 	/* unknown predicate -> error */
 	{
 		char *argv[] = {"ferret", ".", "-bogus"};
