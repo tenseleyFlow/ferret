@@ -9,6 +9,8 @@ FLAT=${FLAT:-20000}
 WDIRS=${WDIRS:-200}
 WFILES=${WFILES:-100}
 DEPTH=${DEPTH:-400}
+DFILES=${DFILES:-90} # files per level in the deep chain (keeps total work above
+                     # hyperfine's ~10ms noise floor so the gate uses mean, not min)
 
 # 'seq' on Linux, 'jot' on BSD — wrap.
 nums() { if command -v seq >/dev/null 2>&1; then seq 1 "$1"; else jot "$1"; fi; }
@@ -29,8 +31,14 @@ fi
 
 if [ ! -d "$root/deep" ]; then
 	d="$root/deep"; p="$d"; mkdir -p "$p"; i=0
-	while [ "$i" -lt "$DEPTH" ]; do p="$p/d"; i=$((i + 1)); done
-	mkdir -p "$p"; : > "$p/leaf"
+	while [ "$i" -lt "$DEPTH" ]; do
+		p="$p/d"; mkdir -p "$p"
+		# a few files at every level: pure descent is too quick to time
+		# reliably, so give each level some readdir/stat work too.
+		nums "$DFILES" | awk -v q="$p" '{printf "%s/f%03d\n", q, $1}' | xargs touch
+		i=$((i + 1))
+	done
+	: > "$p/leaf"
 fi
 
 echo "$root"
