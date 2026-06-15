@@ -808,9 +808,18 @@ static struct expr *parse_predicate(struct pstate *ps)
 		if (*m == '-') {
 			match = PERM_ALL;
 			m++;
-		} else if (*m == '/' || *m == '+') { /* '+' is the deprecated alias of '/' */
+		} else if (*m == '/') {
 			match = PERM_ANY;
 			m++;
+		}
+		/* find 4.10.0 has no '+' prefix: '+SYMBOLIC' (e.g. +rw) is an ordinary
+		 * exact mode parsed whole, while '+OCTAL' is rejected. The old GNU
+		 * '+OCTAL' = '/OCTAL' extension was removed because it clashed with
+		 * chmod's reading of the same string (parser.c). */
+		if (arg[0] == '+' && arg[1] >= '0' && arg[1] <= '7') {
+			ps->error = "invalid mode";
+			ps->error_arg = arg;
+			return NULL;
 		}
 		unsigned mode;
 		if (parse_mode_str(m, &mode) != 0) {
