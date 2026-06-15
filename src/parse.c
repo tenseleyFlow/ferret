@@ -1,6 +1,7 @@
 #include "parse.h"
 #include "pred.h"
 #include "action.h"
+#include "diag.h"
 #include "exec.h"
 #include "fmt.h"
 #include "glob.h"
@@ -96,12 +97,20 @@ static bool tok_is(const char *t, const char *a, const char *b)
  * fixed key table. */
 static void set_errorf(struct pstate *ps, const char *fmt, ...)
 {
-	char buf[256];
 	va_list ap;
 	va_start(ap, fmt);
-	vsnprintf(buf, sizeof buf, fmt, ap);
+	int n = vsnprintf(NULL, 0, fmt, ap);
 	va_end(ap);
-	ps->error = arena_strdup(ps->arena, buf);
+	if (n < 0) {
+		ps->error = "invalid expression";
+		ps->error_arg = NULL;
+		return;
+	}
+	char *buf = arena_alloc(ps->arena, (size_t)n + 1);
+	va_start(ap, fmt);
+	vsnprintf(buf, (size_t)n + 1, fmt, ap);
+	va_end(ap);
+	ps->error = buf;
 	ps->error_arg = NULL;
 }
 
@@ -459,6 +468,8 @@ static int parse_datetime_basic(const char *s, long long *sec, long *nsec)
  * '+' is allowed only for -exec/-execdir (not -ok/-okdir). */
 static struct expr *parse_exec(struct pstate *ps, struct expr *e, int execdir, int ok)
 {
+	const char *pname = ok ? (execdir ? "-okdir" : "-ok")
+			       : (execdir ? "-execdir" : "-exec");
 	int allow_plus = !ok;
 	int start = ps->i;
 	int term = 0; /* 1=';', 2='+' */
@@ -466,25 +477,29 @@ static struct expr *parse_exec(struct pstate *ps, struct expr *e, int execdir, i
 	int prev_braces = 0;
 	for (int k = ps->i; k < ps->argc; k++) {
 		const char *t = ps->argv[k];
+		/* '+' terminates only when the previous arg contained '{}' (find tests
+		 * with mbsstr, i.e. '{}' anywhere in the token, not just a bare "{}"). */
+		if (allow_plus && t[0] == '+' && t[1] == '\0' && prev_braces) {
+			term = 2;
+			end = k;
+			break;
+		}
 		if (strcmp(t, ";") == 0) {
 			term = 1;
 			end = k;
 			break;
 		}
-		if (allow_plus && strcmp(t, "+") == 0 && prev_braces) {
-			term = 2;
-			end = k;
-			break;
-		}
-		prev_braces = (strcmp(t, "{}") == 0);
+		prev_braces = (strstr(t, "{}") != NULL);
 	}
 	if (term == 0) {
-		ps->error = "missing terminator (expected ';' or '+') for -exec";
+		/* ran off the end with no ';' or valid '+' terminator (tree.c) */
+		set_errorf(ps, "missing argument to `%s'", pname);
 		return NULL;
 	}
 	int ntmpl = end - start;
 	if (ntmpl == 0) {
-		ps->error = "missing command for -exec";
+		/* the terminator is the first token: empty command */
+		set_errorf(ps, "invalid argument `%s' to `%s'", ps->argv[end], pname);
 		return NULL;
 	}
 	char **tmpl = arena_alloc(ps->arena, (size_t)ntmpl * sizeof(char *));
@@ -497,17 +512,27 @@ static struct expr *parse_exec(struct pstate *ps, struct expr *e, int execdir, i
 	 * fires, so find actually substitutes it. Parity-first: match find and allow
 	 * it (recorded in .docs/deviations.md). */
 	if (term == 2) {
-		int braces = 0;
+		const char *suffix = execdir ? "dir" : "";
+		int brace_count = 0;
+		const char *brace_arg = NULL;
 		for (int k = 0; k < ntmpl; k++) {
-			if (strcmp(tmpl[k], "{}") == 0)
-				braces++;
-			else if (strstr(tmpl[k], "{}")) {
-				ps->error = "only one instance of {} is supported with -exec ... +";
-				return NULL;
+			if (strstr(tmpl[k], "{}")) {
+				brace_count++;
+				brace_arg = tmpl[k];
 			}
 		}
-		if (braces != 1) {
-			ps->error = "only one instance of {} is supported with -exec ... +";
+		if (brace_count > 1) {
+			set_errorf(ps, "Only one instance of {} is supported with -exec%s ... +",
+				   suffix);
+			return NULL;
+		}
+		if (brace_arg && strlen(brace_arg) != 2) {
+			/* find quotes these three with the locale's quoting style. */
+			const char *oq = frt_diag_utf8() ? "\xe2\x80\x98" : "'";
+			const char *cq = frt_diag_utf8() ? "\xe2\x80\x99" : "'";
+			set_errorf(ps, "In %s-exec%s ... {} +%s the %s{}%s must appear by "
+				       "itself, but you specified %s%s%s",
+				   oq, suffix, cq, oq, cq, oq, brace_arg, cq);
 			return NULL;
 		}
 	}
