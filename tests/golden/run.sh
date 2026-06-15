@@ -145,6 +145,10 @@ CASES='
 %C/old2020.txt -printf %Tc|%T+\n
 %C/old2015.txt -printf %AY-%Am-%Ad|%Cj\n
 %C -type f -printf %S\n
+%C -ls
+%C -type f -ls
+%C -type l -ls
+%C -name *.c -ls
 '
 
 # The reference binary is named find-<tag>, so it self-reports that as its program
@@ -237,6 +241,28 @@ check_delete() {
 	fi
 }
 
+# -fprint/-fprint0/-fprintf/-fls write to a named file; compare those files.
+check_files() {
+	for spec in "fprint" "fprint0" "fls" "fprintf"; do
+		fa="$work/fv.a"; fb="$work/fv.b"
+		case "$spec" in
+		fprint)   "$ref" "$corpus" -type f -fprint "$fb" >/dev/null 2>&1
+			  "$UUT" "$corpus" -type f -fprint "$fa" >/dev/null 2>&1 ;;
+		fprint0)  "$ref" "$corpus" -type f -fprint0 "$fb" >/dev/null 2>&1
+			  "$UUT" "$corpus" -type f -fprint0 "$fa" >/dev/null 2>&1 ;;
+		fls)      LC_ALL=C "$ref" "$corpus" -fls "$fb" >/dev/null 2>&1
+			  LC_ALL=C "$UUT" "$corpus" -fls "$fa" >/dev/null 2>&1 ;;
+		fprintf)  "$ref" "$corpus" -type f -fprintf "$fb" '%p|%s|%y\n' >/dev/null 2>&1
+			  "$UUT" "$corpus" -type f -fprintf "$fa" '%p|%s|%y\n' >/dev/null 2>&1 ;;
+		esac
+		if ! cmp -s "$fa" "$fb"; then
+			echo "  DIFF [$spec file]"
+			diff "$fb" "$fa" | head -6
+			echo "$spec" >>"$work/fails"
+		fi
+	done
+}
+
 # Available locales: C plus a UTF-8 one if the box has it.
 utf8=""
 for L in C.UTF-8 en_US.UTF-8 en_US.utf8; do
@@ -263,6 +289,7 @@ if [ -f tests/golden/PARITY_ACTIVE ] && [ -x "$UUT" ]; then
 	done
 	check_ok
 	check_delete
+	check_files
 	if [ -s "$work/fails" ]; then
 		n=$(wc -l <"$work/fails" | tr -d ' ')
 		echo "GOLDEN: parity FAILED ($n diffs vs find $REFTAG)"
