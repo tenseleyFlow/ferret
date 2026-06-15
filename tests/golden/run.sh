@@ -149,6 +149,23 @@ CASES='
 %C -type f -ls
 %C -type l -ls
 %C -name *.c -ls
+%C -path */sub/*
+%C -ipath */SUB/*
+%C -wholename *.c
+%C -lname file.txt
+%C -lname *
+%C -ilname FILE.TXT
+%C -xtype f
+%C -xtype d
+%C -xtype l
+%C -regex .*\.c
+%C -iregex .*\.C
+%C -regex .*/sub
+%C -regextype posix-egrep -regex .*/(alpha|beta)
+%C -regextype posix-extended -regex .*\.(c|log)
+%C -regextype posix-basic -regex .*\.c
+%C -printf %F\n
+%C -type l -printf %p=%F\n
 '
 
 # The reference binary is named find-<tag>, so it self-reports that as its program
@@ -263,6 +280,22 @@ check_files() {
 	done
 }
 
+# -fstype: query the reference's own %F for the corpus (portable across fs), then
+# check -fstype with that value (matches) and a bogus value (matches nothing).
+check_fstype() {
+	ft=$("$ref" "$corpus" -maxdepth 0 -printf '%F\n' 2>/dev/null)
+	[ -n "$ft" ] || return
+	for v in "$ft" nosuchfs; do
+		"$ref" "$corpus" -fstype "$v" 2>/dev/null | sort >"$work/fst.b"
+		"$UUT" "$corpus" -fstype "$v" 2>/dev/null | sort >"$work/fst.a"
+		if ! cmp -s "$work/fst.a" "$work/fst.b"; then
+			echo "  DIFF [fstype $v]"
+			diff "$work/fst.b" "$work/fst.a" | head -6
+			echo "fstype" >>"$work/fails"
+		fi
+	done
+}
+
 # Available locales: C plus a UTF-8 one if the box has it.
 utf8=""
 for L in C.UTF-8 en_US.UTF-8 en_US.utf8; do
@@ -290,6 +323,7 @@ if [ -f tests/golden/PARITY_ACTIVE ] && [ -x "$UUT" ]; then
 	check_ok
 	check_delete
 	check_files
+	check_fstype
 	if [ -s "$work/fails" ]; then
 		n=$(wc -l <"$work/fails" | tr -d ' ')
 		echo "GOLDEN: parity FAILED ($n diffs vs find $REFTAG)"
