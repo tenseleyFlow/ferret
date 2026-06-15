@@ -1,0 +1,63 @@
+name: ci
+
+on:
+  push:
+    paths-ignore: ['**.md', 'doc/**', '.docs/**', 'LICENSE']
+  pull_request:
+    paths-ignore: ['**.md', 'doc/**', '.docs/**', 'LICENSE']
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: cc --version; make --version | head -1
+      - name: deps (linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev hyperfine
+      - name: deps (macos)
+        if: runner.os == 'macOS'
+        run: brew install hyperfine || true
+      - name: configure + build
+        run: ./configure && make CFLAGS="-O2 -Werror"
+      - name: test
+        run: make test
+      - name: io_uring parity (linux)
+        if: runner.os == 'Linux'
+        run: |
+          if grep -q 'FRT_HAS_LIBURING = 1' config.mk; then FRT_IO=uring make test; fi
+      - name: sanitizer build
+        run: make debug
+      - name: bench
+        run: make bench
+
+  freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          prepare: pkg install -y gmake hyperfine || true
+          run: |
+            ./configure
+            gmake CFLAGS="-O2 -Werror"
+            gmake test
+            gmake bench || true   # VM timing too noisy to gate
+
+  musl:
+    runs-on: ubuntu-latest
+    env:
+      CC: musl-gcc
+      FRT_TEST_SANITIZE: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: configure + build
+        run: ./configure && make CFLAGS="-O2 -Werror"
+      - name: test
+        run: make test
