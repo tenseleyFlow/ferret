@@ -964,6 +964,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 	}
 	if (strcmp(name, "-depth") == 0 || strcmp(name, "-d") == 0) {
 		ps->opts->depth_first = 1;
+		ps->opts->explicit_depth = 1;
 		return mk_option_leaf(ps);
 	}
 	if (strcmp(name, "-xdev") == 0 || strcmp(name, "-mount") == 0) {
@@ -1272,6 +1273,22 @@ static bool looks_like_expr(const char *t)
 	       strcmp(t, "!") == 0 || strcmp(t, ",") == 0;
 }
 
+/* find's check_option_combinations: walk the expression for -delete and -prune. */
+static void scan_delete_prune(const struct expr *e, int *del, int *prune)
+{
+	if (!e)
+		return;
+	if (e->kind == EXPR_LEAF) {
+		if (e->pred == ACT_DELETE)
+			*del = 1;
+		else if (e->pred == PRED_PRUNE)
+			*prune = 1;
+		return;
+	}
+	scan_delete_prune(e->lhs, del, prune);
+	scan_delete_prune(e->rhs, del, prune);
+}
+
 int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *out)
 {
 	memset(out, 0, sizeof *out);
@@ -1391,6 +1408,20 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 		out->expr = mk_binop(&ps, EXPR_AND, expr, mk_print_leaf(&ps));
 	} else {
 		out->expr = expr;
+	}
+
+	/* -delete implicitly turns on -depth, which makes -prune a no-op. find
+	 * treats the combination as a fatal error unless -depth was explicit, to
+	 * guard against deleting more than the user expected (Savannah #20865). */
+	int has_delete = 0, has_prune = 0;
+	scan_delete_prune(out->expr, &has_delete, &has_prune);
+	if (has_delete && has_prune && !out->opts.explicit_depth) {
+		out->error = "The -delete action automatically turns on -depth, "
+			     "but -prune does nothing when -depth is in effect.  "
+			     "If you want to carry on anyway, just explicitly use "
+			     "the -depth option.";
+		out->error_arg = NULL;
+		return -1;
 	}
 	return 0;
 }

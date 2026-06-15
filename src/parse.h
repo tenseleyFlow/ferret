@@ -16,6 +16,7 @@ struct options {
 	int maxdepth; /* -1 = unlimited */
 	int mindepth; /* 0 = no floor */
 	int depth_first;          /* -depth / -d: post-order traversal */
+	int explicit_depth;       /* -depth/-d given on the command line (not implied by -delete) */
 	int xdev;                 /* -xdev / -mount: do not cross device boundaries */
 	int noleaf;               /* -noleaf: disable leaf optimization (no-op for now) */
 	int ignore_readdir_race;  /* -ignore_readdir_race */
