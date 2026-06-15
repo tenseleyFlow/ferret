@@ -15,4 +15,16 @@ bool pred_false(const struct expr *e, struct entry *ent, struct evalctx *ctx);
  * (no effect under -depth, handled by the walker). */
 bool pred_prune(const struct expr *e, struct entry *ent, struct evalctx *ctx);
 
+/* Metadata predicates (each forces a stat on demand via entry_stat). */
+bool pred_size(const struct expr *e, struct entry *ent, struct evalctx *ctx);
+bool pred_links(const struct expr *e, struct entry *ent, struct evalctx *ctx);
+bool pred_inum(const struct expr *e, struct entry *ent, struct evalctx *ctx);
+bool pred_uid(const struct expr *e, struct entry *ent, struct evalctx *ctx);
+bool pred_gid(const struct expr *e, struct entry *ent, struct evalctx *ctx);
+bool pred_nouser(const struct expr *e, struct entry *ent, struct evalctx *ctx);
+bool pred_nogroup(const struct expr *e, struct entry *ent, struct evalctx *ctx);
+bool pred_samefile(const struct expr *e, struct entry *ent, struct evalctx *ctx);
+bool pred_perm(const struct expr *e, struct entry *ent, struct evalctx *ctx);
+bool pred_access(const struct expr *e, struct entry *ent, struct evalctx *ctx);
+
 #endif /* FRT_PRED_H */

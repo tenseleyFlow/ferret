@@ -2,9 +2,14 @@
 #include "pred.h"
 #include "action.h"
 #include "glob.h"
+#include "sys/xstat.h"
 
+#include <fcntl.h>
+#include <grp.h>
+#include <pwd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* bfs cost constants (audit 03, decided). */
 #define COST_FAST 40.0f
@@ -111,6 +116,163 @@ static int parse_nonneg(const char *s)
 	return v;
 }
 
+/* Parse +N / -N / N into a comparison kind and value. Returns 0 / -1. */
+static int parse_num_arg(const char *s, int *kind, long long *val)
+{
+	if (!s || !*s)
+		return -1;
+	*kind = COMP_EQ;
+	if (*s == '+') {
+		*kind = COMP_GT;
+		s++;
+	} else if (*s == '-') {
+		*kind = COMP_LT;
+		s++;
+	}
+	if (!*s)
+		return -1;
+	long long v = 0;
+	for (const char *p = s; *p; p++) {
+		if (*p < '0' || *p > '9')
+			return -1;
+		v = v * 10 + (*p - '0');
+	}
+	*val = v;
+	return 0;
+}
+
+/* Parse a -size argument: [+-]N[bcwkMG]. Returns 0, -1 (bad number), -2 (bad
+ * suffix). On bad suffix, *suffix is the offending char. */
+static int parse_size_arg(const char *s, int *kind, long long *val, long long *unit, char *suffix)
+{
+	if (!s || !*s)
+		return -1;
+	*kind = COMP_EQ;
+	const char *p = s;
+	if (*p == '+') {
+		*kind = COMP_GT;
+		p++;
+	} else if (*p == '-') {
+		*kind = COMP_LT;
+		p++;
+	}
+	if (*p < '0' || *p > '9')
+		return -1;
+	long long v = 0;
+	while (*p >= '0' && *p <= '9')
+		v = v * 10 + (*p++ - '0');
+	long long u = 512; /* default suffix 'b' = 512-byte blocks */
+	if (*p) {
+		switch (*p) {
+		case 'b': u = 512; break;
+		case 'c': u = 1; break;
+		case 'w': u = 2; break;
+		case 'k': u = 1024; break;
+		case 'M': u = 1024LL * 1024; break;
+		case 'G': u = 1024LL * 1024 * 1024; break;
+		default:  *suffix = *p; return -2;
+		}
+		if (p[1]) {
+			*suffix = p[1];
+			return -2;
+		}
+	}
+	*val = v;
+	*unit = u;
+	return 0;
+}
+
+/* Parse an octal or symbolic mode (starting from 0, as -perm requires). 0/-1. */
+static int parse_mode_str(const char *s, unsigned *out)
+{
+	if (!s || !*s)
+		return -1;
+	int octal = 1;
+	for (const char *p = s; *p; p++)
+		if (*p < '0' || *p > '7') {
+			octal = 0;
+			break;
+		}
+	if (octal) {
+		unsigned v = 0;
+		for (const char *p = s; *p; p++)
+			v = v * 8u + (unsigned)(*p - '0');
+		*out = v & 07777u;
+		return 0;
+	}
+
+	/* symbolic: comma-separated [ugoa]*[+-=][rwxXst]* clauses, base 0 */
+	unsigned mode = 0;
+	const char *p = s;
+	while (*p) {
+		unsigned who = 0;
+		int who_set = 0;
+		for (; *p; p++) {
+			if (*p == 'u')
+				who |= 0700u, who_set = 1;
+			else if (*p == 'g')
+				who |= 0070u, who_set = 1;
+			else if (*p == 'o')
+				who |= 0007u, who_set = 1;
+			else if (*p == 'a')
+				who |= 0777u, who_set = 1;
+			else
+				break;
+		}
+		if (*p != '+' && *p != '-' && *p != '=')
+			return -1;
+		char op = *p++;
+		if (!who_set)
+			who = 0777u;
+		unsigned rwx = 0, sbit = 0, tbit = 0;
+		for (; *p && *p != ','; p++) {
+			switch (*p) {
+			case 'r': rwx |= 4u; break;
+			case 'w': rwx |= 2u; break;
+			case 'x': rwx |= 1u; break;
+			case 's': sbit = 1; break;
+			case 't': tbit = 1; break;
+			case 'X': break; /* conditional-x: no file context at parse, treat as 0 */
+			default:  return -1;
+			}
+		}
+		unsigned value = 0;
+		if (who & 0700u)
+			value |= rwx << 6;
+		if (who & 0070u)
+			value |= rwx << 3;
+		if (who & 0007u)
+			value |= rwx;
+		if (sbit) {
+			if (who & 0700u)
+				value |= 04000u;
+			if (who & 0070u)
+				value |= 02000u;
+		}
+		if (tbit)
+			value |= 01000u;
+
+		if (op == '+')
+			mode |= value;
+		else if (op == '-')
+			mode &= ~value;
+		else { /* '=' clears the affected who triples (and their special bits) */
+			unsigned clear = 0;
+			if (who & 0700u)
+				clear |= 0700u | 04000u;
+			if (who & 0070u)
+				clear |= 0070u | 02000u;
+			if (who & 0007u)
+				clear |= 0007u | 01000u;
+			mode = (mode & ~clear) | value;
+		}
+		if (*p == ',')
+			p++;
+	}
+	*out = mode & 07777u;
+	return 0;
+}
+
 /* A positional option (-depth, -xdev, ...) evaluates to a no-op true; its effect
  * is recorded in ps->opts at parse time. */
 static struct expr *mk_option_leaf(struct pstate *ps)
@@ -173,6 +335,189 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->needs_stat = true;
 		e->cost = 2 * COST_STAT;
 		e->prob = 0.01f;
+		return e;
+	}
+	if (strcmp(name, "-size") == 0) {
+		const char *arg = cur(ps);
+		if (!arg) {
+			ps->error = "missing argument to -size";
+			return NULL;
+		}
+		int kind;
+		long long val, unit;
+		char bad = 0;
+		int rc = parse_size_arg(arg, &kind, &val, &unit, &bad);
+		if (rc == -2) {
+			char *b = arena_alloc(ps->arena, 2);
+			b[0] = bad;
+			b[1] = '\0';
+			ps->error = "invalid -size type";
+			ps->error_arg = b;
+			return NULL;
+		}
+		if (rc != 0) {
+			ps->error = "invalid argument to -size";
+			ps->error_arg = arg;
+			return NULL;
+		}
+		advance(ps);
+		e->pred = PRED_SIZE;
+		e->eval = pred_size;
+		e->needs_stat = true;
+		e->u.size.kind = kind;
+		e->u.size.val = val;
+		e->u.size.unit = unit;
+		e->cost = COST_STAT;
+		e->prob = 0.5f;
+		return e;
+	}
+	if (strcmp(name, "-links") == 0 || strcmp(name, "-inum") == 0 ||
+	    strcmp(name, "-uid") == 0 || strcmp(name, "-gid") == 0) {
+		const char *arg = cur(ps);
+		int kind;
+		long long val;
+		if (!arg || parse_num_arg(arg, &kind, &val) != 0) {
+			ps->error = "non-numeric argument";
+			ps->error_arg = name;
+			return NULL;
+		}
+		advance(ps);
+		e->eval = name[1] == 'l'   ? pred_links
+			  : name[1] == 'i' ? pred_inum
+			  : name[1] == 'u' ? pred_uid
+					   : pred_gid;
+		e->pred = name[1] == 'l'   ? PRED_LINKS
+			  : name[1] == 'i' ? PRED_INUM
+			  : name[1] == 'u' ? PRED_UID
+					   : PRED_GID;
+		e->needs_stat = true;
+		e->u.num.kind = kind;
+		e->u.num.val = val;
+		e->cost = COST_STAT;
+		e->prob = 0.5f;
+		return e;
+	}
+	if (strcmp(name, "-user") == 0 || strcmp(name, "-group") == 0) {
+		const char *arg = cur(ps);
+		if (!arg) {
+			ps->error = "missing argument";
+			ps->error_arg = name;
+			return NULL;
+		}
+		advance(ps);
+		int is_user = name[1] == 'u';
+		long long id;
+		if (is_user) {
+			struct passwd *pw = getpwnam(arg);
+			if (pw)
+				id = pw->pw_uid;
+			else {
+				char *end;
+				long n = strtol(arg, &end, 10);
+				if (*arg && !*end)
+					id = n;
+				else {
+					ps->error = "is not the name of a known user";
+					ps->error_arg = arg;
+					return NULL;
+				}
+			}
+		} else {
+			struct group *gr = getgrnam(arg);
+			if (gr)
+				id = gr->gr_gid;
+			else {
+				char *end;
+				long n = strtol(arg, &end, 10);
+				if (*arg && !*end)
+					id = n;
+				else {
+					ps->error = "is not the name of a known group";
+					ps->error_arg = arg;
+					return NULL;
+				}
+			}
+		}
+		e->eval = is_user ? pred_uid : pred_gid;
+		e->pred = is_user ? PRED_UID : PRED_GID;
+		e->needs_stat = true;
+		e->u.num.kind = COMP_EQ;
+		e->u.num.val = id;
+		e->cost = COST_STAT;
+		e->prob = 0.5f;
+		return e;
+	}
+	if (strcmp(name, "-nouser") == 0 || strcmp(name, "-nogroup") == 0) {
+		int is_user = name[3] == 'u';
+		e->eval = is_user ? pred_nouser : pred_nogroup;
+		e->pred = is_user ? PRED_NOUSER : PRED_NOGROUP;
+		e->needs_stat = true;
+		e->cost = COST_STAT;
+		e->prob = 0.01f;
+		return e;
+	}
+	if (strcmp(name, "-samefile") == 0) {
+		const char *arg = cur(ps);
+		if (!arg) {
+			ps->error = "missing argument to -samefile";
+			return NULL;
+		}
+		advance(ps);
+		struct frt_statinfo si;
+		int follow = ps->opts->follow != 0;
+		if (frt_stat_at(AT_FDCWD, arg, follow, &si) != 0) {
+			ps->error = "cannot stat -samefile reference";
+			ps->error_arg = arg;
+			return NULL;
+		}
+		e->pred = PRED_SAMEFILE;
+		e->eval = pred_samefile;
+		e->needs_stat = true;
+		e->u.samefile.dev = si.dev;
+		e->u.samefile.ino = si.ino;
+		e->cost = COST_STAT;
+		e->prob = 0.01f;
+		return e;
+	}
+	if (strcmp(name, "-perm") == 0) {
+		const char *arg = cur(ps);
+		if (!arg) {
+			ps->error = "missing argument to -perm";
+			return NULL;
+		}
+		advance(ps);
+		int match = PERM_EXACT;
+		const char *m = arg;
+		if (*m == '-') {
+			match = PERM_ALL;
+			m++;
+		} else if (*m == '/' || *m == '+') { /* '+' is the deprecated alias of '/' */
+			match = PERM_ANY;
+			m++;
+		}
+		unsigned mode;
+		if (parse_mode_str(m, &mode) != 0) {
+			ps->error = "invalid mode";
+			ps->error_arg = arg;
+			return NULL;
+		}
+		e->pred = PRED_PERM;
+		e->eval = pred_perm;
+		e->needs_stat = true;
+		e->u.perm.match = match;
+		e->u.perm.mode = mode;
+		e->cost = COST_STAT;
+		e->prob = 0.5f;
+		return e;
+	}
+	if (strcmp(name, "-readable") == 0 || strcmp(name, "-writable") == 0 ||
+	    strcmp(name, "-executable") == 0) {
+		e->pred = PRED_ACCESS;
+		e->eval = pred_access;
+		e->needs_stat = true;
+		e->u.access.amode = name[1] == 'r' ? R_OK : name[1] == 'w' ? W_OK : X_OK;
+		e->cost = COST_STAT;
+		e->prob = name[1] == 'r' ? 0.99f : name[1] == 'w' ? 0.8f : 0.2f;
 		return e;
 	}
 	if (strcmp(name, "-true") == 0) {
