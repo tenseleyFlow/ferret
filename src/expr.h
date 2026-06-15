@@ -17,6 +17,7 @@
 
 struct expr;
 struct evalctx;
+struct fmt; /* fmt.h */
 
 typedef bool (*eval_fn)(const struct expr *e, struct entry *ent, struct evalctx *ctx);
 
@@ -35,7 +36,7 @@ enum pred_id {
 	PRED_SIZE, PRED_LINKS, PRED_INUM, PRED_UID, PRED_GID,
 	PRED_NOUSER, PRED_NOGROUP, PRED_SAMEFILE, PRED_PERM, PRED_ACCESS,
 	PRED_TIME,
-	ACT_PRINT, ACT_PRINT0, ACT_EXEC, ACT_DELETE, ACT_QUIT,
+	ACT_PRINT, ACT_PRINT0, ACT_EXEC, ACT_DELETE, ACT_QUIT, ACT_PRINTF,
 };
 
 /* Numeric comparison form for +N / -N / N arguments. */
@@ -82,6 +83,11 @@ struct expr {
 			int ok;            /* prompt on stderr / read stdin first */
 			struct exec_batch *batch; /* + accumulator (heap), else NULL */
 		} exec;
+		struct {
+			struct fmt *fmt;  /* compiled -printf/-fprintf/-fls format */
+			int newline;      /* append '\n' (-fprint) / NUL (-fprint0) */
+			int zero;         /* -fprint0 / -print0 style NUL terminator */
+		} pf;
 	} u;
 };
 
@@ -91,6 +97,8 @@ struct evalctx {
 	int dirfd;             /* fd of the dir containing the entry (AT_FDCWD for roots) */
 	int dir_id;            /* unique id of the containing directory instance (-execdir +) */
 	const char *statname;  /* name to pass to fstatat under dirfd (root: full path) */
+	const char *root;      /* the start path this entry was found under (%H) */
+	uint32_t root_len;     /* strlen(root) (%P prefix strip) */
 	int follow;            /* symlink follow mode: 0=-P 1=-L 2=-H */
 	struct dstr *out;      /* output buffer */
 	int out_fd;            /* where to drain the buffer (1 = stdout) */

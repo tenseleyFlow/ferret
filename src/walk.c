@@ -268,6 +268,8 @@ int frt_walk(const char *root, const struct options *opts, const struct expr *ex
 
 	we.ctx.follow = opts->follow;
 	we.ctx.dir_id = 0;
+	we.ctx.root = root;
+	we.ctx.root_len = (uint32_t)strlen(root);
 	we.ctx.out = out;
 	we.ctx.out_fd = out_fd;
 	we.ctx.arena = &we.arena;

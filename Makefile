@@ -41,6 +41,7 @@ SRC = \
 	src/entry.c \
 	src/eval.c \
 	src/exec.c \
+	src/fmt.c \
 	src/glob.c \
 	src/main.c \
 	src/parse.c \

@@ -2,6 +2,7 @@
 #include "pred.h"
 #include "action.h"
 #include "exec.h"
+#include "fmt.h"
 #include "glob.h"
 #include "sys/xstat.h"
 
@@ -902,6 +903,30 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->eval = zero ? act_print0 : act_print;
 		e->pure = false;
 		e->no_default_print = true;
+		e->cost = COST_PRINT;
+		e->prob = 1.0f;
+		ps->has_action = true;
+		return e;
+	}
+	if (strcmp(name, "-printf") == 0) {
+		const char *arg = cur(ps);
+		if (!arg) {
+			ps->error = "missing argument to -printf";
+			return NULL;
+		}
+		advance(ps);
+		const char *ferr = NULL;
+		struct fmt *cf = fmt_compile(arg, ps->arena, &ferr);
+		if (!cf) {
+			ps->error = ferr ? ferr : "invalid -printf format";
+			return NULL;
+		}
+		e->pred = ACT_PRINTF;
+		e->eval = act_printf;
+		e->pure = false;
+		e->no_default_print = true;
+		e->u.pf.fmt = cf;
+		e->needs_stat = fmt_needs_stat(cf);
 		e->cost = COST_PRINT;
 		e->prob = 1.0f;
 		ps->has_action = true;
