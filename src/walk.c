@@ -21,6 +21,10 @@ struct ancestor {
 	char *path; /* path of this ancestor dir, for the loop diagnostic */
 };
 
+/* Cap on stat-free guard conjuncts kept for pre-filtering; extra ones just
+ * aren't used as a guard (still evaluated by eval_expr — no correctness impact). */
+#define FRT_GUARD_MAX 8
+
 struct walkenv {
 	const struct options *opts;
 	const struct expr *expr;
@@ -33,7 +37,13 @@ struct walkenv {
 	int dir_seq;       /* monotonic directory-instance counter (-execdir +) */
 	struct frt_pool *pool; /* parallel stat pool (NULL = serial) */
 	int needs_stat;    /* expression can trigger a stat (gates the pool) */
+	const struct expr *guard[FRT_GUARD_MAX]; /* stat-free necessary conditions */
+	int nguard;        /* count of guard conjuncts (0 = no pre-filter) */
 };
+
+/* Don't dispatch to the pool for a survivor batch smaller than this — waking
+ * worker threads costs more than the handful of serial fstatat calls it saves. */
+#define FRT_POOL_BATCH_FLOOR 32
 
 static void report_error(struct walkenv *we, const char *path, int err)
 {
@@ -277,19 +287,23 @@ static void process_one(struct walkenv *we, struct entry *ent, int dirfd, int de
 	dstr_truncate(&we->path, oldlen);
 }
 
-/* Pool job: stat ents[i] into the pre-allocated slots[i] (workers touch disjoint
- * indices; fstatat on a shared dir fd is stateless — no locking). */
+/* Pool job: worker k stats the survivor entry surv[k] into slots[k] (workers
+ * touch disjoint indices; fstatat on a shared dir fd is stateless — no locking).
+ * surv maps the dense pool index to the entry index so only entries that pass
+ * the stat-free guard are stat'd. */
 struct statjob {
 	struct entry **ents;
 	struct frt_statinfo *slots;
+	const uint32_t *surv;
 	int dirfd;
 	int follow;
 };
 
-static void stat_worker(void *arg, size_t i)
+static void stat_worker(void *arg, size_t k)
 {
 	struct statjob *j = arg;
-	frt_entry_fill_stat(j->ents[i], j->dirfd, j->ents[i]->name, j->follow, &j->slots[i]);
+	uint32_t i = j->surv[k];
+	frt_entry_fill_stat(j->ents[i], j->dirfd, j->ents[i]->name, j->follow, &j->slots[k]);
 }
 
 /* Read every entry of `d` into the arena, then DROP the directory's 64KB read
@@ -331,11 +345,34 @@ static void walk_children(struct walkenv *we, struct frt_dir *d, int depth)
 	if (read_err)
 		report_error(we, we->path.data, read_err);
 
-	if (we->pool && we->needs_stat && we->ctx.follow == 0) {
-		if (n > 0) {
-			struct frt_statinfo *slots = arena_alloc(&we->arena, n * sizeof *slots);
-			struct statjob job = {ents, slots, dirfd, we->ctx.follow == 1};
-			frt_pool_for(we->pool, n, stat_worker, &job);
+	if (we->pool && we->needs_stat && we->ctx.follow == 0 && n > 0) {
+		/* Pre-filter: only entries passing the stat-free guard can match, so
+		 * only they need a stat. With no guard every entry survives (== the old
+		 * stat-all behavior). The guard reads d_name/d_type only — no path. */
+		uint32_t *surv = arena_alloc(&we->arena, n * sizeof *surv);
+		size_t ns = 0;
+		if (we->nguard > 0) {
+			we->ctx.dirfd = dirfd;
+			for (size_t i = 0; i < n; i++) {
+				we->ctx.statname = ents[i]->name;
+				int pass = 1;
+				for (int g = 0; g < we->nguard && pass; g++)
+					pass = eval_expr(we->guard[g], ents[i], &we->ctx);
+				if (pass)
+					surv[ns++] = (uint32_t)i;
+			}
+		} else {
+			for (size_t i = 0; i < n; i++)
+				surv[i] = (uint32_t)i;
+			ns = n;
+		}
+
+		/* Batch-size floor: a tiny survivor set isn't worth pool dispatch —
+		 * let eval_expr stat those few lazily on this thread. */
+		if (ns >= FRT_POOL_BATCH_FLOOR) {
+			struct frt_statinfo *slots = arena_alloc(&we->arena, ns * sizeof *slots);
+			struct statjob job = {ents, slots, surv, dirfd, we->ctx.follow == 1};
+			frt_pool_for(we->pool, ns, stat_worker, &job);
 		}
 		for (size_t i = 0; i < n; i++) {
 			process_one(we, ents[i], dirfd, depth, my_id);
@@ -376,6 +413,10 @@ int frt_walk(const char *root, const struct options *opts, const struct expr *ex
 	we.dir_seq = 0;
 	we.pool = pool;
 	we.needs_stat = needs_stat;
+	/* Only worth a guard when the pool is engaged and the query can stat. */
+	we.nguard = (pool && needs_stat)
+			    ? frt_expr_collect_guard(expr, we.guard, FRT_GUARD_MAX)
+			    : 0;
 
 	we.ctx.follow = opts->follow;
 	we.ctx.dir_id = 0;

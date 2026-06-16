@@ -61,6 +61,51 @@ int frt_expr_needs_stat(const struct expr *e)
 	return frt_expr_needs_stat(e->lhs) || frt_expr_needs_stat(e->rhs);
 }
 
+/* A subexpression is "guardable" if it can be evaluated from the dirent alone
+ * (d_name + d_type), with no side effects: every leaf is a -name/-iname/-type/
+ * -true/-false test. Such a subexpr needs neither the built path nor (normally)
+ * a stat, so it can pre-filter entries before the parallel-stat batch. */
+static int guardable(const struct expr *e)
+{
+	if (!e)
+		return 1;
+	if (e->kind == EXPR_LEAF) {
+		switch (e->pred) {
+		case PRED_NAME:
+		case PRED_INAME:
+		case PRED_TYPE:
+		case PRED_TRUE:
+		case PRED_FALSE:
+			return 1;
+		default:
+			return 0;
+		}
+	}
+	if (e->kind == EXPR_COMMA)
+		return 0; /* its value/side-effect shape isn't a plain conjunct */
+	return guardable(e->lhs) && guardable(e->rhs);
+}
+
+/* Collect into out[] the top-level AND conjuncts of `root` that are guardable.
+ * Their conjunction is a necessary, stat-free condition for `root` to match:
+ * an entry failing it can't match, so it never needs a stat. Returns the count
+ * (capped at `cap`). The guard never changes output — it only decides which
+ * entries are worth pre-stat'ing; eval_expr still runs in full afterwards. */
+int frt_expr_collect_guard(const struct expr *root, const struct expr **out, int cap)
+{
+	if (!root || cap <= 0)
+		return 0;
+	if (root->kind == EXPR_AND) {
+		int n = frt_expr_collect_guard(root->lhs, out, cap);
+		return n + frt_expr_collect_guard(root->rhs, out + n, cap - n);
+	}
+	if (guardable(root)) {
+		out[0] = root;
+		return 1;
+	}
+	return 0;
+}
+
 const struct frt_statinfo *entry_stat(struct entry *ent, struct evalctx *ctx)
 {
 	if (ent->flags & ENT_STATTED)
