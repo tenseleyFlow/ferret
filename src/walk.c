@@ -137,6 +137,37 @@ static void anc_pop(struct walkenv *we)
 	free(we->anc[we->nanc].path);
 }
 
+/* Open the directory containing a start path, so the root entry is evaluated in
+ * the same parent-dir context find uses: -execdir/-okdir chdir there and run
+ * "./basename", and %l/%F resolve relative to it. Returns a fd (caller closes if
+ * >= 0) or AT_FDCWD when there's no meaningful parent or the open fails. */
+static int open_start_parent(struct arena *a, const char *root)
+{
+	size_t n = strlen(root);
+	while (n > 1 && root[n - 1] == '/') /* ignore trailing slashes */
+		n--;
+	size_t slash = 0;
+	int has_slash = 0;
+	for (size_t i = 0; i < n; i++)
+		if (root[i] == '/') {
+			slash = i;
+			has_slash = 1;
+		}
+	const char *dir;
+	if (!has_slash) {
+		dir = "."; /* bare name: parent is the cwd */
+	} else if (slash == 0) {
+		dir = "/"; /* "/x": parent is the root dir */
+	} else {
+		char *b = arena_alloc(a, slash + 1);
+		memcpy(b, root, slash);
+		b[slash] = '\0';
+		dir = b;
+	}
+	int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	return fd >= 0 ? fd : AT_FDCWD;
+}
+
 static void walk_children(struct walkenv *we, struct frt_dir *d, int depth);
 
 /* Open `name` under `parent_fd` and walk its contents at `child_depth`. */
@@ -357,6 +388,9 @@ int frt_walk(const char *root, const struct options *opts, const struct expr *ex
 	we.ctx.prune = false;
 	we.ctx.quit = false;
 
+	int root_parent_fd = AT_FDCWD; /* parent dir of the start point (for -execdir) */
+	int root_dir_id = 0;
+
 	dstr_appendz(&we.path, root);
 
 	size_t blen;
@@ -392,6 +426,16 @@ int frt_walk(const char *root, const struct options *opts, const struct expr *ex
 	ent->dev = si->dev;
 	we.start_dev = si->dev;
 
+	/* Evaluate the start point in its parent-directory context (like find): so
+	 * -execdir/-okdir chdir there and run "./basename", and %l/%F resolve
+	 * relative to it. A unique dir_id keeps its '+' batch from merging with
+	 * other start points. ent->path stays the full path for -print/plain -exec. */
+	root_parent_fd = open_start_parent(&we.arena, root);
+	root_dir_id = ++we.dir_seq;
+	we.ctx.dirfd = root_parent_fd;
+	we.ctx.statname = ent->name;
+	we.ctx.dir_id = root_dir_id;
+
 	int isdir = (ent->type == FRT_DIR);
 	if (opts->depth_first) {
 		if (isdir && may_descend(&we, ent, 0)) {
@@ -408,8 +452,9 @@ int frt_walk(const char *root, const struct options *opts, const struct expr *ex
 		}
 		if (!we.ctx.quit && 0 >= opts->mindepth) {
 			ent->path = we.path.data; /* walk may have realloc'd the buffer */
-			we.ctx.dirfd = AT_FDCWD; /* recursion changed it; root stats from cwd */
-			we.ctx.statname = root;
+			we.ctx.dirfd = root_parent_fd; /* recursion changed it; restore */
+			we.ctx.statname = ent->name;
+			we.ctx.dir_id = root_dir_id;
 			we.ctx.prune = false;
 			(void)eval_expr(expr, ent, &we.ctx);
 		}
@@ -431,7 +476,14 @@ int frt_walk(const char *root, const struct options *opts, const struct expr *ex
 		}
 	}
 
+	/* flush the start point's own -execdir '+' batch in its parent dir. */
+	we.ctx.dirfd = root_parent_fd;
+	we.ctx.dir_id = root_dir_id;
+	frt_exec_flush_tree(expr, 1, root_dir_id, &we.ctx);
+
 done:
+	if (root_parent_fd >= 0)
+		close(root_parent_fd);
 	free(we.anc);
 	dstr_free(&we.path);
 	arena_destroy(&we.arena);
