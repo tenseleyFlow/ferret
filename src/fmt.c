@@ -432,6 +432,25 @@ static void emit_spec_str(struct dstr *out, const char *spec, const char *val)
 	}
 }
 
+/* Numeric directives (%d/%m/%S) need the same measure-then-malloc as
+ * emit_spec_str, so a wide field width is not truncated by a fixed buffer. A
+ * macro because the argument type varies (int / unsigned / double). */
+#define EMIT_SPEC_NUM(out, spec, val)                                          \
+	do {                                                                   \
+		char _b[512];                                                  \
+		int _n = snprintf(_b, sizeof _b, (spec), (val));               \
+		if (_n < 0)                                                    \
+			break;                                                 \
+		if ((size_t)_n < sizeof _b) {                                  \
+			dstr_append((out), _b, (size_t)_n);                    \
+		} else {                                                       \
+			char *_big = frt_xmalloc((size_t)_n + 1);              \
+			snprintf(_big, (size_t)_n + 1, (spec), (val));         \
+			dstr_append((out), _big, (size_t)_n);                  \
+			free(_big);                                            \
+		}                                                              \
+	} while (0)
+
 static void render_dir(const struct segment *s, struct entry *ent, struct evalctx *ctx,
 		       struct dstr *out)
 {
@@ -469,12 +488,9 @@ static void render_dir(const struct segment *s, struct entry *ent, struct evalct
 	case 'H':
 		emit_spec_str(out, s->spec, ctx->root ? ctx->root : "");
 		return;
-	case 'd': {
-		char buf[64];
-		snprintf(buf, sizeof buf, s->spec, ent->depth);
-		dstr_appendz(out, buf);
+	case 'd':
+		EMIT_SPEC_NUM(out, s->spec, ent->depth);
 		return;
-	}
 	case 'y':
 		emit_spec_str(out, s->spec, type_letter(ent->type));
 		return;
@@ -554,12 +570,9 @@ static void render_dir(const struct segment *s, struct entry *ent, struct evalct
 		}
 		break;
 	}
-	case 'm': {
-		char buf[32];
-		snprintf(buf, sizeof buf, s->spec, (unsigned)(st->mode & 07777));
-		dstr_appendz(out, buf);
+	case 'm':
+		EMIT_SPEC_NUM(out, s->spec, (unsigned)(st->mode & 07777));
 		break;
-	}
 	case 'M': {
 		char ms[16];
 		filemodestring(st->mode, ms);
@@ -573,9 +586,7 @@ static void render_dir(const struct segment *s, struct entry *ent, struct evalct
 			sp = (st->blocks == 0) ? 1.0 : (st->blocks < 0 ? -HUGE_VAL : HUGE_VAL);
 		else
 			sp = (512.0 * (double)st->blocks) / (double)st->size;
-		char buf[64];
-		snprintf(buf, sizeof buf, s->spec, sp);
-		dstr_appendz(out, buf);
+		EMIT_SPEC_NUM(out, s->spec, sp);
 		break;
 	}
 	case 'a':
