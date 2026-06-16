@@ -37,10 +37,12 @@ int frt_regextype_from_name(const char *name)
 }
 
 /* Translate emacs/GNU-BRE patterns to POSIX ERE by swapping the backslash sense
- * of the grouping/alternation metacharacters. emacs and GNU BRE both make bare
- * ( ) { } | literal and \( \) \{ \} \| special — the opposite of ERE. GNU BRE
- * additionally makes bare + ? literal and \+ \? operators (emacs treats bare
- * + ? as operators), so `bre` toggles that extra swap. */
+ * of the grouping/alternation metacharacters: both dialects make bare ( ) | and
+ * + ? (BRE) literal and \( \) \| special — the opposite of ERE. Braces differ:
+ * GNU BRE has the interval operator \{n,m\} (so \{ -> ERE {), but emacs has NO
+ * interval — both { and \{ are literal there (-> ERE \{). GNU BRE also makes
+ * bare + ? literal and \+ \? operators (emacs treats bare + ? as operators), so
+ * `bre` toggles those extra swaps. */
 static char *emacs_to_ere(const char *pat, int bre, struct arena *a)
 {
 	size_t n = strlen(pat);
@@ -49,8 +51,20 @@ static char *emacs_to_ere(const char *pat, int bre, struct arena *a)
 	for (const char *p = pat; *p;) {
 		if (*p == '\\' && p[1]) {
 			char c = p[1];
-			if (c == '(' || c == ')' || c == '{' || c == '}' || c == '|') {
+			if (c == '(' || c == ')' || c == '|') {
 				*w++ = c; /* \( -> ( etc. (now special in ERE) */
+				p += 2;
+				continue;
+			}
+			if (c == '{' || c == '}') {
+				/* GNU BRE: \{ \} are interval operators -> ERE { }.
+				 * emacs: \{ \} are LITERAL braces (no interval) -> ERE \{ \}. */
+				if (bre)
+					*w++ = c;
+				else {
+					*w++ = '\\';
+					*w++ = c;
+				}
 				p += 2;
 				continue;
 			}
