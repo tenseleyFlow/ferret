@@ -128,6 +128,21 @@ static void set_errorf(struct pstate *ps, const char *fmt, ...)
 static const char *q_open(void) { return frt_diag_utf8() ? "\xe2\x80\x98" : "'"; }
 static const char *q_close(void) { return frt_diag_utf8() ? "\xe2\x80\x99" : "'"; }
 
+/* Stat a reference file for -samefile/-newer/-newerXY. Under -L/-H, a dangling
+ * symlink reference (deref fails with ENOENT) falls back to lstat and uses the
+ * link itself, like find, instead of erroring. 0 / -1 with the original
+ * (follow) errno preserved for the diagnostic. */
+static int stat_reference(int follow, const char *arg, struct frt_statinfo *si)
+{
+	if (frt_stat_at(AT_FDCWD, arg, follow, si) == 0)
+		return 0;
+	int e = errno;
+	if (follow && e == ENOENT && frt_stat_at(AT_FDCWD, arg, 0, si) == 0)
+		return 0;
+	errno = e;
+	return -1;
+}
+
 /* find's -regextype error lists every accepted dialect, each locale-quoted. */
 static void set_regextype_error(struct pstate *ps, const char *arg)
 {
@@ -916,9 +931,8 @@ static struct expr *parse_predicate(struct pstate *ps)
 		advance(ps);
 		struct frt_statinfo si;
 		int follow = ps->opts->follow != 0;
-		if (frt_stat_at(AT_FDCWD, arg, follow, &si) != 0) {
-			int err = errno;
-			set_errorf(ps, "%s%s%s: %s", q_open(), arg, q_close(), strerror(err));
+		if (stat_reference(follow, arg, &si) != 0) {
+			set_errorf(ps, "%s%s%s: %s", q_open(), arg, q_close(), strerror(errno));
 			return NULL;
 		}
 		e->pred = PRED_SAMEFILE;
@@ -1017,9 +1031,8 @@ static struct expr *parse_predicate(struct pstate *ps)
 		}
 		advance(ps);
 		struct frt_statinfo si;
-		if (frt_stat_at(AT_FDCWD, arg, ps->opts->follow != 0, &si) != 0) {
-			int err = errno;
-			set_errorf(ps, "%s%s%s: %s", q_open(), arg, q_close(), strerror(err));
+		if (stat_reference(ps->opts->follow != 0, arg, &si) != 0) {
+			set_errorf(ps, "%s%s%s: %s", q_open(), arg, q_close(), strerror(errno));
 			return NULL;
 		}
 		int field = name[1] == 'n' ? TF_MTIME : name[1] == 'a' ? TF_ATIME : TF_CTIME;
@@ -1063,10 +1076,9 @@ static struct expr *parse_predicate(struct pstate *ps)
 			}
 		} else {
 			struct frt_statinfo si;
-			if (frt_stat_at(AT_FDCWD, arg, ps->opts->follow != 0, &si) != 0) {
-				int err = errno;
+			if (stat_reference(ps->opts->follow != 0, arg, &si) != 0) {
 				set_errorf(ps, "%s%s%s: %s", q_open(), arg, q_close(),
-					   strerror(err));
+					   strerror(errno));
 				return NULL;
 			}
 			switch (Y) {
