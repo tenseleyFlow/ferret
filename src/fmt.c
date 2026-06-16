@@ -15,6 +15,11 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/sysmacros.h> /* major()/minor() (glibc moved them out of sys/types.h) */
+#else
+#include <sys/types.h>
+#endif
 
 enum seg_kind { SEG_PLAIN, SEG_STOP, SEG_DIR };
 enum arg_type { ARG_STR, ARG_INT, ARG_UINT, ARG_DBL };
@@ -699,6 +704,7 @@ bool act_printf(const struct expr *e, struct entry *ent, struct evalctx *ctx)
  * files are listed (find/lib/listfile.c defaults). */
 static int ls_w_ino = 9, ls_w_blk = 6, ls_w_nlink = 3, ls_w_owner = 8;
 static int ls_w_group = 8, ls_w_size = 8;
+static int ls_w_major = 3, ls_w_minor = 3; /* device node major,minor columns */
 static time_t ls_now;
 
 /* -ls name quoting (find listfile.c print_name_with_quoting): backslash a few
@@ -786,7 +792,15 @@ bool act_ls(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	}
 	dstr_appendz(out, buf);
 
-	ls_num_right(out, &ls_w_size, (unsigned long long)st->size);
+	/* device nodes show "major, minor" in the size column (gnulib list_file);
+	 * everything else shows the byte size. */
+	if (S_ISCHR(st->mode) || S_ISBLK(st->mode)) {
+		ls_num_right(out, &ls_w_major, (unsigned long long)major(st->rdev));
+		dstr_append(out, ", ", 2);
+		ls_num_right(out, &ls_w_minor, (unsigned long long)minor(st->rdev));
+	} else {
+		ls_num_right(out, &ls_w_size, (unsigned long long)st->size);
+	}
 	dstr_appendc(out, ' ');
 
 	struct tm *lt = localtime(&st->mtime);
