@@ -25,4 +25,8 @@ void frt_exec_flush_tree(const struct expr *e, int execdir_only, int dir_id, str
 void frt_exec_flush_pending(const struct expr *e, struct dstr *out, int out_fd,
 			    int *exit_status);
 
+/* Free the heap-allocated '+' batches in the tree (the CLI leaks them at exit;
+ * tests and clean-shutdown paths call this). Safe once; clears each batch ptr. */
+void frt_exec_free(struct expr *e);
+
 #endif /* FRT_EXEC_H */

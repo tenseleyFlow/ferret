@@ -297,3 +297,24 @@ void frt_exec_flush_pending(const struct expr *e, struct dstr *out, int out_fd,
 	ctx.exit_status = exit_status;
 	frt_exec_flush_tree(e, 0, -1, &ctx);
 }
+
+void frt_exec_free(struct expr *e)
+{
+	if (!e)
+		return;
+	if (e->kind != EXPR_LEAF) {
+		frt_exec_free(e->lhs);
+		frt_exec_free(e->rhs);
+		return;
+	}
+	if (e->pred == ACT_EXEC && e->u.exec.batch) {
+		struct exec_batch *b = e->u.exec.batch;
+		/* File args (past the borrowed template prefix) are heap-owned; a
+		 * flushed batch has none pending, but free defensively. */
+		for (int i = b->init_argc; i < b->argc; i++)
+			free(b->argv[i]);
+		free(b->argv);
+		free(b);
+		e->u.exec.batch = NULL;
+	}
+}

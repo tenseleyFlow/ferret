@@ -8,7 +8,9 @@ static int m(struct arena *a, const char *pat, int type, int fold, const char *s
 	struct frt_regex *re = frt_regex_compile(pat, type, fold, a, &err);
 	if (!re)
 		return -1;
-	return frt_regex_match(re, s, strlen(s));
+	int r = frt_regex_match(re, s, strlen(s));
+	frt_regex_free(re); /* release engine state (struct stays in the arena) */
+	return r;
 }
 
 int main(void)

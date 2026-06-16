@@ -148,3 +148,12 @@ int frt_regex_match(const struct frt_regex *re, const char *path, size_t len)
 	/* find anchors the whole path: the match must span [0, len). */
 	return m.rm_so == 0 && m.rm_eo == (regoff_t)len;
 }
+
+void frt_regex_free(struct frt_regex *re)
+{
+	/* regcomp allocates inside regex_t; the wrapper itself is arena-owned, so
+	 * only the engine state needs releasing. The CLI leaks this at exit
+	 * (process lifetime); tests call it to stay leak-clean under LSan. */
+	if (re)
+		regfree(&re->re);
+}

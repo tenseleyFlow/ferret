@@ -2,6 +2,7 @@
 #include "util.h"
 
 #include <stdint.h>
+#include <stdlib.h>
 
 int main(void)
 {
@@ -23,6 +24,7 @@ int main(void)
 
 	char *s = frt_strdup("xyz");
 	CHECK_STR("strdup", s, "xyz");
+	free(s);
 
 	return test_summary("util");
 }

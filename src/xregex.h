@@ -32,4 +32,8 @@ struct frt_regex *frt_regex_compile(const char *pat, int regextype, int casefold
 /* 1 if the whole [path, path+len) matches. */
 int frt_regex_match(const struct frt_regex *re, const char *path, size_t len);
 
+/* Release the engine state (regfree). The wrapper struct is arena-owned. The CLI
+ * leaks this at exit; tests call it to stay leak-clean. */
+void frt_regex_free(struct frt_regex *re);
+
 #endif /* FRT_XREGEX_H */

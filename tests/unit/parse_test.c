@@ -1,6 +1,7 @@
 #include "test.h"
 #include "parse.h"
 #include "expr.h"
+#include "exec.h"
 #include "arena.h"
 
 static struct parse_result parse(struct arena *a, int argc, char **argv)
@@ -203,6 +204,7 @@ int main(void)
 		struct parse_result pr = parse(&a, 6, argv);
 		CHECK("exec + multiple", pr.expr->u.exec.multiple == 1);
 		CHECK("exec + batch allocated", pr.expr->u.exec.batch != NULL);
+		frt_exec_free(pr.expr); /* batch is heap-allocated; free it (arena holds the node) */
 	}
 	/* -execdir sets execdir flag */
 	{
