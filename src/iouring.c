@@ -6,6 +6,7 @@
 #include "entry.h"
 #include "sys/xstat.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
@@ -98,11 +99,26 @@ void frt_iouring_statx_batch(struct frt_iouring *r, int dirfd, struct entry **en
 		}
 		if (prepped == 0)
 			break; /* can't make progress; eval_expr lazy-stats the rest */
-		io_uring_submit(&r->ring);
 
-		for (size_t done = 0; done < prepped; done++) {
+		int sub;
+		do {
+			sub = io_uring_submit(&r->ring);
+		} while (sub == -EINTR);
+		if (sub <= 0)
+			break; /* submit failed; eval_expr lazy-stats the rest, ring left clean */
+		size_t want = (size_t)sub < prepped ? (size_t)sub : prepped;
+
+		/* Reap exactly the completions we asked for. wait only `want` times so a
+		 * short submit can't block forever; advance base by what we actually
+		 * reaped so a wait failure can't skip un-stat'd entries (they fall back to
+		 * eval_expr's lazy fstatat). */
+		size_t done = 0;
+		for (; done < want; done++) {
 			struct io_uring_cqe *cqe;
-			if (io_uring_wait_cqe(&r->ring, &cqe) < 0)
+			int w;
+			while ((w = io_uring_wait_cqe(&r->ring, &cqe)) == -EINTR)
+				;
+			if (w < 0)
 				break;
 			size_t j = (size_t)(uintptr_t)io_uring_cqe_get_data(cqe);
 			size_t k = base + j;
@@ -116,7 +132,9 @@ void frt_iouring_statx_batch(struct frt_iouring *r, int dirfd, struct entry **en
 			}
 			io_uring_cqe_seen(&r->ring, cqe);
 		}
-		base += prepped;
+		base += done;
+		if (done < prepped)
+			break; /* didn't fully drain this chunk; lazy-stat the remainder */
 	}
 }
 
