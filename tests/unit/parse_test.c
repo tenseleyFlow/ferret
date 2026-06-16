@@ -3,6 +3,7 @@
 #include "expr.h"
 #include "exec.h"
 #include "arena.h"
+#include <stdlib.h>
 
 static struct parse_result parse(struct arena *a, int argc, char **argv)
 {
@@ -251,6 +252,22 @@ int main(void)
 		struct parse_result pr;
 		int rc = frt_parse(5, argv, &a, &pr);
 		CHECK("missing paren fails", rc == -1 && pr.error != NULL);
+	}
+
+	/* a pathologically long !/-not chain is capped (not a stack overflow) */
+	{
+		int nots = 5000; /* > FRT_EXPR_DEPTH_MAX (4000) */
+		int argc = 2 + nots + 1;
+		char **argv = malloc((size_t)argc * sizeof *argv);
+		argv[0] = "ferret";
+		argv[1] = ".";
+		for (int k = 0; k < nots; k++)
+			argv[2 + k] = "!";
+		argv[2 + nots] = "-true";
+		struct parse_result pr;
+		int rc = frt_parse(argc, argv, &a, &pr);
+		CHECK("deep ! chain capped, not crashed", rc == -1 && pr.error != NULL);
+		free(argv);
 	}
 
 	arena_destroy(&a);

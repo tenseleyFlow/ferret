@@ -221,7 +221,7 @@ static int parse_nonneg(const char *s)
 {
 	if (!s || !s[0])
 		return -1;
-	int v = 0;
+	long v = 0; /* long, so the *10 can't overflow an int before the cap check */
 	for (const char *p = s; *p; p++) {
 		if (*p < '0' || *p > '9')
 			return -1;
@@ -229,7 +229,7 @@ static int parse_nonneg(const char *s)
 		if (v > 1000000000)
 			return -1;
 	}
-	return v;
+	return (int)v;
 }
 
 /* Parse +N / -N / N into a comparison kind and value. Returns 0 / -1. find
@@ -1416,7 +1416,14 @@ static struct expr *parse_not(struct pstate *ps, const char *prev)
 	int neg = 0;
 	while (cur(ps) && (strcmp(cur(ps), "!") == 0 || strcmp(cur(ps), "-not") == 0)) {
 		prev = cur(ps);
-		neg++;
+		/* Bound the NOT chain like the paren/operator chains: each '!' becomes a
+		 * nested EXPR_NOT that the evaluator and optimizer recurse, so an
+		 * unbounded run would overflow the C stack. */
+		if (++neg > FRT_EXPR_DEPTH_MAX) {
+			set_errorf(ps, "expression nesting too deep (limit %d)",
+				   FRT_EXPR_DEPTH_MAX);
+			return NULL;
+		}
 		advance(ps);
 	}
 	const char *t = cur(ps);
