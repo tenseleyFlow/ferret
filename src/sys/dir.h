@@ -43,4 +43,10 @@ int frt_dirread(struct frt_dir *d, struct frt_dirent *e);
 int frt_dirfd(const struct frt_dir *d);
 void frt_dirclose(struct frt_dir *d);
 
+/* Free the directory object (including its 64KB read buffer) but keep the
+ * underlying fd open, returning it (-1 on failure). The caller owns the fd.
+ * Lets a deep traversal drop the per-directory buffer before descending, so
+ * memory stays bounded by entries-on-path instead of 64KB * depth. */
+int frt_dir_release(struct frt_dir *d);
+
 #endif /* FRT_SYS_DIR_H */

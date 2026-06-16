@@ -131,6 +131,23 @@ void frt_dirclose(struct frt_dir *d)
 	free(d);
 }
 
+int frt_dir_release(struct frt_dir *d)
+{
+#if defined(FRT_DIR_BACKEND_readdir)
+	/* closedir() would close the fd; dup it first so the caller keeps one.
+	 * (This backend has no 64KB buffer of its own, but the contract is the
+	 * same so callers need not special-case it.) */
+	int fd = dup(d->fd);
+	closedir(d->dp);
+	free(d);
+	return fd;
+#else
+	int fd = d->fd;
+	free(d); /* releases the inline DIRBUF; fd stays open */
+	return fd;
+#endif
+}
+
 #if defined(FRT_DIR_BACKEND_readdir)
 
 int frt_dirread(struct frt_dir *d, struct frt_dirent *e)

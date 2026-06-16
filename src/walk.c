@@ -160,11 +160,10 @@ static void descend_into(struct walkenv *we, int parent_fd, const char *name, in
 		}
 	}
 
-	walk_children(we, child, child_depth);
+	walk_children(we, child, child_depth); /* consumes `child`: frees it, closes its fd */
 
 	if (pushed)
 		anc_pop(we);
-	frt_dirclose(child);
 }
 
 /* Evaluate one entry (respecting -mindepth) and recurse if it is a descendable
@@ -251,35 +250,18 @@ static void stat_worker(void *arg, size_t i)
 	frt_entry_fill_stat(j->ents[i], j->dirfd, j->ents[i]->name, j->follow, &j->slots[i]);
 }
 
-/* Serial (default): stream entries, lazy stat, per-entry arena rewind. */
-static void walk_children_serial(struct walkenv *we, struct frt_dir *d, int dirfd, int depth,
-				 int my_id)
+/* Read every entry of `d` into the arena, then DROP the directory's 64KB read
+ * buffer (frt_dir_release) while keeping its fd for fd-relative descent, and
+ * evaluate/recurse in readdir order. Collecting first (like find's savedir)
+ * means a deep chain costs entries-on-path, not 64KB * depth — so deep trees no
+ * longer balloon virtual memory. Consumes `d` (frees it; closes the fd on
+ * return). When the pool is engaged (-P, stat-heavy, --ferret-threads) the batch
+ * is stat'd in parallel first; output order is identical for any thread count. */
+static void walk_children(struct walkenv *we, struct frt_dir *d, int depth)
 {
-	struct frt_dirent de;
-	int r;
-	while ((r = frt_dirread(d, &de)) == 1) {
-		struct arena_marker mark = arena_mark(&we->arena);
-		struct entry *ent = entry_new(&we->arena, de.name, de.namelen, de.type);
-		ent->depth = depth;
-		ent->ino = de.ino;
-		process_one(we, ent, dirfd, depth, my_id);
-		arena_rewind(&we->arena, mark);
-		if (we->ctx.quit)
-			break;
-	}
-	if (r < 0)
-		report_error(we, we->path.data, errno);
-}
+	int my_id = ++we->dir_seq; /* unique id for this directory instance */
+	struct arena_marker dirmark = arena_mark(&we->arena);
 
-/* Parallel (-P, stat-heavy, --ferret-threads): collect the directory's entries,
- * stat them on the pool, then evaluate/recurse in readdir order. Output order is
- * unchanged — only the stat work is parallel. Over-stats entries a cheap
- * predicate might have short-circuited, which is invisible (the result is the
- * same); engaged only when the user opts in. */
-static void walk_children_parallel(struct walkenv *we, struct frt_dir *d, int dirfd, int depth,
-				   int my_id)
-{
-	struct arena_marker mark = arena_mark(&we->arena);
 	struct entry **ents = NULL;
 	size_t cap = 0, n = 0;
 	struct frt_dirent de;
@@ -294,36 +276,48 @@ static void walk_children_parallel(struct walkenv *we, struct frt_dir *d, int di
 		}
 		ents[n++] = ent;
 	}
-	if (r < 0)
-		report_error(we, we->path.data, errno);
+	int read_err = (r < 0) ? errno : 0;
 
-	if (n > 0) {
-		struct frt_statinfo *slots = arena_alloc(&we->arena, n * sizeof *slots);
-		struct statjob job = {ents, slots, dirfd, we->ctx.follow == 1};
-		frt_pool_for(we->pool, n, stat_worker, &job);
+	/* Drop the 64KB buffer now; keep the fd open for descent into children. */
+	int dirfd = frt_dir_release(d);
+	if (dirfd < 0) {
+		report_error(we, we->path.data, errno);
+		free(ents);
+		arena_rewind(&we->arena, dirmark);
+		return;
 	}
-	for (size_t i = 0; i < n; i++) {
-		process_one(we, ents[i], dirfd, depth, my_id);
-		if (we->ctx.quit)
-			break;
+	if (read_err)
+		report_error(we, we->path.data, read_err);
+
+	if (we->pool && we->needs_stat && we->ctx.follow == 0) {
+		if (n > 0) {
+			struct frt_statinfo *slots = arena_alloc(&we->arena, n * sizeof *slots);
+			struct statjob job = {ents, slots, dirfd, we->ctx.follow == 1};
+			frt_pool_for(we->pool, n, stat_worker, &job);
+		}
+		for (size_t i = 0; i < n; i++) {
+			process_one(we, ents[i], dirfd, depth, my_id);
+			if (we->ctx.quit)
+				break;
+		}
+	} else {
+		/* Serial: per-entry arena rewind keeps scratch tight; the collected
+		 * entry list itself sits below the per-entry mark and survives. */
+		for (size_t i = 0; i < n; i++) {
+			struct arena_marker em = arena_mark(&we->arena);
+			process_one(we, ents[i], dirfd, depth, my_id);
+			arena_rewind(&we->arena, em);
+			if (we->ctx.quit)
+				break;
+		}
 	}
 	free(ents);
-	arena_rewind(&we->arena, mark);
-}
-
-static void walk_children(struct walkenv *we, struct frt_dir *d, int depth)
-{
-	int dirfd = frt_dirfd(d);
-	int my_id = ++we->dir_seq; /* unique id for this directory instance */
-
-	if (we->pool && we->needs_stat && we->ctx.follow == 0)
-		walk_children_parallel(we, d, dirfd, depth, my_id);
-	else
-		walk_children_serial(we, d, dirfd, depth, my_id);
 
 	/* flush this directory's -execdir '+' batch before its fd closes. */
 	we->ctx.dirfd = dirfd;
 	frt_exec_flush_tree(we->expr, 1, my_id, &we->ctx);
+	close(dirfd);
+	arena_rewind(&we->arena, dirmark);
 }
 
 int frt_walk(const char *root, const struct options *opts, const struct expr *expr,
@@ -394,10 +388,9 @@ int frt_walk(const char *root, const struct options *opts, const struct expr *ex
 			else {
 				if (opts->follow == 1)
 					anc_push(&we, si->dev, si->ino, root);
-				walk_children(&we, d, 1);
+				walk_children(&we, d, 1); /* consumes `d` */
 				if (opts->follow == 1)
 					anc_pop(&we);
-				frt_dirclose(d);
 			}
 		}
 		if (!we.ctx.quit && 0 >= opts->mindepth) {
@@ -418,10 +411,9 @@ int frt_walk(const char *root, const struct options *opts, const struct expr *ex
 			else {
 				if (opts->follow == 1)
 					anc_push(&we, si->dev, si->ino, root);
-				walk_children(&we, d, 1);
+				walk_children(&we, d, 1); /* consumes `d` */
 				if (opts->follow == 1)
 					anc_pop(&we);
-				frt_dirclose(d);
 			}
 		}
 	}
