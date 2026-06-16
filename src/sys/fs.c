@@ -45,8 +45,10 @@ const char *frt_fstype(int dirfd, const char *name)
 
 	/* Don't follow symlinks: fstatfs the entry itself; for symlinks (incl.
 	 * broken) the open fails, so fall back to the containing directory's fs —
-	 * which is where the link lives, matching find's -P behavior. */
-	int fd = openat(dirfd, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+	 * which is where the link lives, matching find's -P behavior. O_NONBLOCK so
+	 * a FIFO (O_RDONLY blocks until a writer appears) returns at once instead of
+	 * wedging the whole traversal; harmless for dirs and regular files. */
+	int fd = openat(dirfd, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
 	if (fd >= 0) {
 		have = (fstatfs(fd, &sfs) == 0);
 		close(fd);
