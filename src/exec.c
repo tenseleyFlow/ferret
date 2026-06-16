@@ -224,8 +224,10 @@ bool act_exec(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	b->dirfd = e->u.exec.execdir ? ctx->dirfd : -1;
 	b->dir_id = ctx->dir_id;
 	if (b->argc + 1 >= b->alloc) {
-		b->alloc *= 2;
-		b->argv = frt_xrealloc(b->argv, (size_t)b->alloc * sizeof(char *));
+		/* grow in size_t so the doubling can't wrap the int before the cast */
+		size_t na = (size_t)b->alloc * 2;
+		b->argv = frt_xrealloc(b->argv, frt_size_mul(na, sizeof(char *)));
+		b->alloc = (int)na;
 	}
 	b->argv[b->argc++] = farg;
 	b->cur_chars += flen;

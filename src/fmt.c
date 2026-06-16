@@ -713,7 +713,11 @@ bool act_printf(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 }
 
 /* -ls / -fls column widths — static, shared across all -ls actions, grown as
- * files are listed (find/lib/listfile.c defaults). */
+ * files are listed (find/lib/listfile.c defaults). Main-thread-only: -ls renders
+ * during eval_expr, which runs on the submitting thread after the stat pool's
+ * join barrier (the pool runs only stat_worker). These statics — and the
+ * non-reentrant getpwuid/getgrgid behind the owner/group columns — would race if
+ * act_ls ever moved into a worker; it must not. */
 static int ls_w_ino = 9, ls_w_blk = 6, ls_w_nlink = 3, ls_w_owner = 8;
 static int ls_w_group = 8, ls_w_size = 8;
 static int ls_w_major = 3, ls_w_minor = 3; /* device node major,minor columns */

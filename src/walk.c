@@ -328,7 +328,7 @@ static void walk_children(struct walkenv *we, struct frt_dir *d, int depth)
 		ent->ino = de.ino;
 		if (n == cap) {
 			cap = cap ? cap * 2 : 128;
-			ents = frt_xrealloc(ents, cap * sizeof *ents);
+			ents = frt_xrealloc(ents, frt_size_mul(cap, sizeof *ents));
 		}
 		ents[n++] = ent;
 	}

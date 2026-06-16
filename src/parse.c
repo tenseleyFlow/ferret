@@ -1644,7 +1644,17 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 			 * parallel stat pass. 0 = force all CPUs, 1 = force serial, N = N.
 			 * Omitting the flag leaves threads at -1 (structural auto, main.c). */
 			int v = parse_nonneg(argv[i + 1]);
-			out->opts.threads = (v < 0) ? 1 : v;
+			if (v < 0) {
+				const char *bad = argv[i + 1];
+				char *m = arena_alloc(arena, strlen(bad) + 96);
+				snprintf(m, strlen(bad) + 96,
+					 "Expected a non-negative decimal integer argument "
+					 "to --ferret-threads, but got %s%s%s",
+					 q_open(), bad, q_close());
+				out->error = m;
+				return -1;
+			}
+			out->opts.threads = v;
 			i += 2;
 		} else if (strcmp(a, "-D") == 0 && i + 1 < argc) {
 			const char *d = argv[i + 1];
