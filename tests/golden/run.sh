@@ -171,7 +171,10 @@ CASES='
 # The reference binary is named find-<tag>, so it self-reports that as its program
 # name in diagnostics; normalize it (and ferret / plain find) to PROG.
 refbase=$(basename "$ref")
-normprog() { sed "s/^$refbase: /PROG: /; s/^ferret: /PROG: /; s/^find: /PROG: /"; }
+# find reports its program name as the full argv[0] it was invoked with (e.g.
+# "tests/.work/ref/find-4.10.0:"), not just the basename — normalize both, plus
+# ferret/find. '#' delimiter so the path's slashes need no escaping.
+normprog() { sed "s#^$ref: #PROG: #; s/^$refbase: /PROG: /; s/^ferret: /PROG: /; s/^find: /PROG: /"; }
 
 # %U/%G expand to the current uid/gid (deterministic per machine; both tools agree)
 me_uid=$(id -u)
