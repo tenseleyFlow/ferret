@@ -9,6 +9,7 @@
 #include "xregex.h"
 #include "sys/xstat.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
@@ -212,7 +213,7 @@ static int parse_nonneg(const char *s)
  * anything larger is rejected, not silently wrapped. */
 static int parse_num_arg(const char *s, int *kind, unsigned long long *val)
 {
-	if (!s || !*s)
+	if (!s)
 		return -1;
 	*kind = COMP_EQ;
 	if (*s == '+') {
@@ -222,17 +223,14 @@ static int parse_num_arg(const char *s, int *kind, unsigned long long *val)
 		*kind = COMP_LT;
 		s++;
 	}
-	if (!*s)
+	/* find parses the magnitude with xstrtoumax, which (via strtoumax) skips
+	 * leading whitespace and takes an optional sign. strtoull matches that;
+	 * reject empty, trailing junk, and overflow. */
+	errno = 0;
+	char *end;
+	unsigned long long v = strtoull(s, &end, 10);
+	if (end == s || *end != '\0' || errno == ERANGE)
 		return -1;
-	unsigned long long v = 0;
-	for (const char *p = s; *p; p++) {
-		if (*p < '0' || *p > '9')
-			return -1;
-		unsigned d = (unsigned)(*p - '0');
-		if (v > (ULLONG_MAX - d) / 10)
-			return -1; /* overflow */
-		v = v * 10 + d;
-	}
 	*val = v;
 	return 0;
 }
@@ -285,8 +283,10 @@ static int parse_size_arg(const char *s, int *kind, unsigned long long *val, lon
 		*kind = (*p == '+') ? COMP_GT : COMP_LT;
 		p++;
 	}
+	while (p < pend && isspace((unsigned char)*p)) /* xstrtoumax skips leading ws */
+		p++;
 	if (p == pend)
-		return -1; /* nothing but a sign */
+		return -1; /* nothing but a sign/whitespace */
 	unsigned long long v = 0;
 	for (; p < pend; p++) {
 		if (*p < '0' || *p > '9')
