@@ -5,6 +5,7 @@ on:
     paths-ignore: ['**.md', 'doc/**', '.docs/**', 'LICENSE']
   pull_request:
     paths-ignore: ['**.md', 'doc/**', '.docs/**', 'LICENSE']
+  workflow_dispatch:
 
 jobs:
   native:
