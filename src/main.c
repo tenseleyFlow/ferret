@@ -8,6 +8,7 @@
 #include "outfile.h"
 #include "opt.h"
 #include "pool.h"
+#include "iouring.h"
 #include "eval.h"
 #include "arena.h"
 #include "dstr.h"
@@ -77,13 +78,15 @@ int main(int argc, char **argv)
 	 * stats; output is byte-identical to a serial run for any worker count.
 	 *
 	 *   opts.threads: -1 auto (default), 0 force-all, 1 serial, N = N workers.
-	 * FRT_IO=uring requests the io_uring statx backend; until that lands it maps
-	 * to force-all on the worker pool (silently, so output is unaffected). */
+	 * FRT_IO=uring requests the io_uring statx backend for the same stat batch
+	 * (and, like before, forces engagement on); it falls back to the worker pool
+	 * if io_uring is unavailable. Either backend produces byte-identical output. */
 	int needs_stat = frt_expr_needs_stat(pr.expr);
 	int want = pr.opts.threads;
 	const char *io = getenv("FRT_IO");
-	if (io && strcmp(io, "uring") == 0 && want < 0)
-		want = 0; /* uring -> force the parallel stat pool */
+	int prefer_uring = (io && strcmp(io, "uring") == 0);
+	if (prefer_uring && want < 0)
+		want = 0; /* explicit opt-in forces the parallel stat backend on */
 
 	int max_workers = frt_pool_default_workers();
 	int threads;
@@ -98,18 +101,29 @@ int main(int argc, char **argv)
 		 * stat pass and just burn ~2MB of stack each. Output is identical. */
 		threads = want > max_workers ? max_workers : want;
 	}
-	struct frt_pool *pool = (threads > 1 && needs_stat) ? frt_pool_create(threads) : NULL;
+
+	/* Engage a parallel stat backend when the walk will stat in bulk. Prefer
+	 * io_uring when asked and available; otherwise the worker pool. */
+	struct frt_pool *pool = NULL;
+	struct frt_iouring *uring = NULL;
+	if (threads > 1 && needs_stat) {
+		if (prefer_uring)
+			uring = frt_iouring_create(256); /* NULL if kernel/sandbox lacks it */
+		if (!uring)
+			pool = frt_pool_create(threads);
+	}
 
 	struct dstr out;
 	dstr_init(&out);
 	int exit_status = 0;
 
 	for (int i = 0; i < pr.npaths; i++)
-		if (frt_walk(pr.paths[i], &pr.opts, pr.expr, pool, needs_stat, &out, 1,
+		if (frt_walk(pr.paths[i], &pr.opts, pr.expr, pool, uring, needs_stat, &out, 1,
 			     &exit_status))
 			break; /* -quit */
 
 	frt_pool_destroy(pool);
+	frt_iouring_destroy(uring);
 
 	/* run any pending -exec ... + batches accumulated across all roots */
 	frt_exec_flush_pending(pr.expr, &out, 1, &exit_status);

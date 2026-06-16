@@ -45,6 +45,7 @@ SRC = \
 	src/fmt.c \
 	src/glob.c \
 	src/idcache.c \
+	src/iouring.c \
 	src/main.c \
 	src/opt.c \
 	src/outfile.c \

@@ -5,6 +5,7 @@
 #include "diag.h"
 #include "exec.h"
 #include "pool.h"
+#include "iouring.h"
 #include "sys/dir.h"
 #include "sys/xstat.h"
 
@@ -35,8 +36,9 @@ struct walkenv {
 	struct ancestor *anc; /* -L: (dev,ino) of directories on the current path */
 	int nanc, anccap;
 	int dir_seq;       /* monotonic directory-instance counter (-execdir +) */
-	struct frt_pool *pool; /* parallel stat pool (NULL = serial) */
-	int needs_stat;    /* expression can trigger a stat (gates the pool) */
+	struct frt_pool *pool;      /* parallel stat pool (NULL = serial/uring) */
+	struct frt_iouring *uring;  /* io_uring stat backend (NULL = pool/serial) */
+	int needs_stat;    /* expression can trigger a stat (gates the backend) */
 	const struct expr *guard[FRT_GUARD_MAX]; /* stat-free necessary conditions */
 	int nguard;        /* count of guard conjuncts (0 = no pre-filter) */
 };
@@ -345,7 +347,7 @@ static void walk_children(struct walkenv *we, struct frt_dir *d, int depth)
 	if (read_err)
 		report_error(we, we->path.data, read_err);
 
-	if (we->pool && we->needs_stat && we->ctx.follow == 0 && n > 0) {
+	if ((we->pool || we->uring) && we->needs_stat && we->ctx.follow == 0 && n > 0) {
 		/* Pre-filter: only entries passing the stat-free guard can match, so
 		 * only they need a stat. With no guard every entry survives (== the old
 		 * stat-all behavior). The guard reads d_name/d_type only — no path. */
@@ -367,12 +369,16 @@ static void walk_children(struct walkenv *we, struct frt_dir *d, int depth)
 			ns = n;
 		}
 
-		/* Batch-size floor: a tiny survivor set isn't worth pool dispatch —
+		/* Batch-size floor: a tiny survivor set isn't worth backend dispatch —
 		 * let eval_expr stat those few lazily on this thread. */
 		if (ns >= FRT_POOL_BATCH_FLOOR) {
 			struct frt_statinfo *slots = arena_alloc(&we->arena, ns * sizeof *slots);
-			struct statjob job = {ents, slots, surv, dirfd, we->ctx.follow == 1};
-			frt_pool_for(we->pool, ns, stat_worker, &job);
+			if (we->uring)
+				frt_iouring_statx_batch(we->uring, dirfd, ents, surv, ns, 0, slots);
+			else {
+				struct statjob job = {ents, slots, surv, dirfd, 0};
+				frt_pool_for(we->pool, ns, stat_worker, &job);
+			}
 		}
 		for (size_t i = 0; i < n; i++) {
 			process_one(we, ents[i], dirfd, depth, my_id);
@@ -400,8 +406,8 @@ static void walk_children(struct walkenv *we, struct frt_dir *d, int depth)
 }
 
 int frt_walk(const char *root, const struct options *opts, const struct expr *expr,
-	     struct frt_pool *pool, int needs_stat, struct dstr *out, int out_fd,
-	     int *exit_status)
+	     struct frt_pool *pool, struct frt_iouring *uring, int needs_stat,
+	     struct dstr *out, int out_fd, int *exit_status)
 {
 	struct walkenv we;
 	we.opts = opts;
@@ -412,9 +418,10 @@ int frt_walk(const char *root, const struct options *opts, const struct expr *ex
 	we.nanc = we.anccap = 0;
 	we.dir_seq = 0;
 	we.pool = pool;
+	we.uring = uring;
 	we.needs_stat = needs_stat;
-	/* Only worth a guard when the pool is engaged and the query can stat. */
-	we.nguard = (pool && needs_stat)
+	/* Only worth a guard when a stat backend is engaged and the query can stat. */
+	we.nguard = ((pool || uring) && needs_stat)
 			    ? frt_expr_collect_guard(expr, we.guard, FRT_GUARD_MAX)
 			    : 0;
 

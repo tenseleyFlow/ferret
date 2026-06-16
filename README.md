@@ -8,8 +8,8 @@ binaries, `ferret` and `frt`.
 
 Early. The M0 scaffold builds and the harness is green; the predicate surface lands sprint by sprint
 (see `.docs/sprints/`). A golden suite checks output byte for byte against a locally built GNU find
-4.10.0, backed by a differential fuzzer, in CI on Ubuntu, macOS, FreeBSD, and musl/Alpine, plus an
-io_uring job.
+4.10.0, backed by a differential fuzzer, in CI on Ubuntu, macOS, FreeBSD, and musl/Alpine; the Linux
+job re-runs the suite under the io_uring stat backend so its output is held to the same parity.
 
 ## Build
 
@@ -40,9 +40,10 @@ only normalized difference is the leading program-name token on stderr.
 The main saving is not calling `lstat` when `d_type` already answers the type, plus `getdents` with a
 64 KB buffer, arena allocation with inline names, cost-based predicate reordering, and batched
 `write(2)`. By default metadata stats run inline — one `fstatat` per file, as a predicate needs it.
-An opt-in worker pool (`--ferret-threads N`) runs them in parallel for stat-heavy traversals, with
-identical output; an `io_uring` backend is planned but not yet implemented (`FRT_IO=uring` falls back
-to the pool). Numbers land as the surface fills in (sprint 02+).
+A worker pool runs them in parallel for stat-heavy traversals — auto-engaged on a stat-bound physical
+walk, or forced with `--ferret-threads N` — with identical output. `FRT_IO=uring` instead batches the
+stats through Linux io_uring (`statx`), falling back to the pool where io_uring is unavailable; the
+fill mirrors `fstatat` exactly, so output is unchanged. Numbers land as the surface fills in (sprint 02+).
 
 ## Layout
 
