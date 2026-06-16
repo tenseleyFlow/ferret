@@ -43,7 +43,9 @@ The main saving is not calling `lstat` when `d_type` already answers the type, p
 A worker pool runs them in parallel for stat-heavy traversals — auto-engaged on a stat-bound physical
 walk, or forced with `--ferret-threads N` — with identical output. `FRT_IO=uring` instead batches the
 stats through Linux io_uring (`statx`), falling back to the pool where io_uring is unavailable; the
-fill mirrors `fstatat` exactly, so output is unchanged. Numbers land as the surface fills in (sprint 02+).
+fill mirrors `fstatat` exactly, so output is unchanged. On the metadata workloads measured the pool is
+the faster backend (it spreads `statx` across cores; io_uring reaps on one thread), so io_uring stays
+an opt-in alternative rather than the default. Numbers land as the surface fills in (sprint 02+).
 
 ## Layout
 
