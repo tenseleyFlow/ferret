@@ -169,7 +169,10 @@ static void batch_flush(struct exec_batch *b, struct evalctx *ctx)
 	if (!b->pending)
 		return;
 	b->argv[b->argc] = NULL;
-	run_argv(b->argv, b->dirfd >= 0, b->dirfd, ctx);
+	/* '+' mode: unlike ';', find propagates a failing batch command to its own
+	 * exit status (non-zero exit, signal death, or exec failure). */
+	if (!run_argv(b->argv, b->dirfd >= 0, b->dirfd, ctx))
+		*ctx->exit_status = 1;
 	for (int i = b->init_argc; i < b->argc; i++)
 		free(b->argv[i]);
 	b->argc = b->init_argc;
