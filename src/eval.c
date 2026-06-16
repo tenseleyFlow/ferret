@@ -86,6 +86,30 @@ static int guardable(const struct expr *e)
 	return guardable(e->lhs) && guardable(e->rhs);
 }
 
+static int subtree_has_name(const struct expr *e)
+{
+	if (!e)
+		return 0;
+	if (e->kind == EXPR_LEAF)
+		return e->pred == PRED_NAME || e->pred == PRED_INAME;
+	return subtree_has_name(e->lhs) || subtree_has_name(e->rhs);
+}
+
+/* True if a top-level AND conjunct is a stat-free name filter (-name/-iname,
+ * possibly inside a guardable subtree). A name pattern is a real selectivity
+ * signal — most entries are rejected before any stat — so a serial walk is
+ * already efficient and the auto-engage heuristic leaves the pool off. (-type
+ * is deliberately not counted: it matches most entries, so it filters little.) */
+int frt_expr_name_selective(const struct expr *root)
+{
+	if (!root)
+		return 0;
+	if (root->kind == EXPR_AND)
+		return frt_expr_name_selective(root->lhs) ||
+		       frt_expr_name_selective(root->rhs);
+	return guardable(root) && subtree_has_name(root);
+}
+
 /* Collect into out[] the top-level AND conjuncts of `root` that are guardable.
  * Their conjunction is a necessary, stat-free condition for `root` to match:
  * an entry failing it can't match, so it never needs a stat. Returns the count

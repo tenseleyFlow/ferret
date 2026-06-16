@@ -1563,7 +1563,7 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 	out->opts.optlevel = 3;
 	out->opts.maxdepth = -1;
 	out->opts.mindepth = 0;
-	out->opts.threads = 1; /* serial by default; --ferret-threads opts into the pool */
+	out->opts.threads = -1; /* auto: engage the stat pool only when structural (main.c) */
 
 	int i = 1;
 
@@ -1623,7 +1623,8 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 			i++;
 		} else if (strcmp(a, "--ferret-threads") == 0 && i + 1 < argc) {
 			/* ferret extension (kept out of --help): worker count for the
-			 * parallel stat pass. 0 = auto (CPU count), 1 = serial. */
+			 * parallel stat pass. 0 = force all CPUs, 1 = force serial, N = N.
+			 * Omitting the flag leaves threads at -1 (structural auto, main.c). */
 			int v = parse_nonneg(argv[i + 1]);
 			out->opts.threads = (v < 0) ? 1 : v;
 			i += 2;

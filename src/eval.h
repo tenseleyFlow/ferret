@@ -19,4 +19,8 @@ int frt_expr_needs_stat(const struct expr *e);
  * `cap`. Used to pre-filter entries before the parallel-stat batch. */
 int frt_expr_collect_guard(const struct expr *root, const struct expr **out, int cap);
 
+/* True if a top-level conjunct is a -name/-iname filter (real selectivity). The
+ * auto-engage heuristic leaves the pool off for such queries (serial is fine). */
+int frt_expr_name_selective(const struct expr *root);
+
 #endif /* FRT_EVAL_H */

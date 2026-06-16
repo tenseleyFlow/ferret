@@ -68,22 +68,36 @@ int main(int argc, char **argv)
 	if (pr.opts.debug & FRT_DBG_OPT)
 		frt_expr_dump(pr.expr, "opt");
 
-	/* parallel stat pool (ferret extension): only when stat-heavy and opted in.
-	 * FRT_IO=uring requests the io_uring statx backend; until that lands it
-	 * falls back to the worker pool (silently, so output is unaffected). */
+	/* parallel stat pool (ferret extension). Engagement is structural, never
+	 * probabilistic: the pool only helps when the walk is about to stat most
+	 * entries, so it auto-engages exactly then — a stat-bound (-newer/-size/...)
+	 * query, physical (-P) walk, with no cheap -name filter to reject entries
+	 * first. A name-selective query rejects most entries before any stat, so a
+	 * serial walk is already efficient and the pool stays off. The pool only
+	 * stats; output is byte-identical to a serial run for any worker count.
+	 *
+	 *   opts.threads: -1 auto (default), 0 force-all, 1 serial, N = N workers.
+	 * FRT_IO=uring requests the io_uring statx backend; until that lands it maps
+	 * to force-all on the worker pool (silently, so output is unaffected). */
 	int needs_stat = frt_expr_needs_stat(pr.expr);
-	int threads = pr.opts.threads;
+	int want = pr.opts.threads;
 	const char *io = getenv("FRT_IO");
-	if (io && strcmp(io, "uring") == 0 && threads == 1)
-		threads = 0; /* engage parallel stat (pool fallback) */
-	if (threads == 0)
-		threads = frt_pool_default_workers();
-	/* Clamp an explicit --ferret-threads N to the auto cap: more workers than
-	 * that never help a stat pass and just burn ~2MB of stack each (a large N
-	 * would spawn hundreds of threads). Output is identical for any N. */
+	if (io && strcmp(io, "uring") == 0 && want < 0)
+		want = 0; /* uring -> force the parallel stat pool */
+
 	int max_workers = frt_pool_default_workers();
-	if (threads > max_workers)
-		threads = max_workers;
+	int threads;
+	if (want < 0) { /* auto: structural stat-bound, non-selective, physical */
+		int engage = needs_stat && pr.opts.follow == 0 &&
+			     !frt_expr_name_selective(pr.expr);
+		threads = engage ? max_workers : 1;
+	} else if (want == 0) {
+		threads = max_workers; /* force-all */
+	} else {
+		/* Clamp explicit N to the auto cap: more workers than that never help a
+		 * stat pass and just burn ~2MB of stack each. Output is identical. */
+		threads = want > max_workers ? max_workers : want;
+	}
 	struct frt_pool *pool = (threads > 1 && needs_stat) ? frt_pool_create(threads) : NULL;
 
 	struct dstr out;
