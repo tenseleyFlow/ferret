@@ -174,6 +174,17 @@ static void process_entry(struct walkenv *we, struct entry *ent, int dirfd, cons
 	const struct options *o = we->opts;
 	int isdir = entry_is_dir(we, ent);
 
+	/* -L: a symlink whose target can't be followed for a reason other than
+	 * "doesn't exist" is an error find reports and skips (ELOOP, ENOTDIR,
+	 * EACCES). entry_is_dir already triggered the follow-stat; a still-LNK type
+	 * with a recorded failure means the target stat failed. Only a genuinely
+	 * dangling link (ENOENT) is silently treated as the link itself. */
+	if (we->ctx.follow == 1 && ent->type == FRT_LNK &&
+	    (ent->flags & ENT_STAT_FAILED) && ent->stat_errno != ENOENT) {
+		report_error(we, we->path.data, ent->stat_errno);
+		return;
+	}
+
 	/* -L loop: a directory pointing back to an ancestor is reported and skipped
 	 * entirely (no eval, no descent) — matches fts FTS_DC handling. */
 	if (isdir) {
@@ -362,13 +373,15 @@ int frt_walk(const char *root, const struct options *opts, const struct expr *ex
 	struct frt_statinfo *si = arena_alloc(&we.arena, sizeof *si);
 	int follow_root = opts->follow != 0; /* -L and -H follow named start paths */
 	if (frt_stat_at(AT_FDCWD, root, follow_root, si) < 0) {
-		/* -L/-H start point that won't follow (e.g. a broken symlink): fall back
-		 * to lstat and treat it as the symlink itself (find does this; no error,
-		 * rc stays 0, and -type l then matches). */
-		if (follow_root && frt_stat_at(AT_FDCWD, root, 0, si) == 0) {
+		int e = errno; /* capture before the lstat below clobbers errno */
+		/* -L/-H start point that won't follow: only a genuinely dangling link
+		 * (target ENOENT) falls back to lstat and is treated as the link itself
+		 * (find: no error, rc 0, -type l matches). Any other failure (ELOOP,
+		 * ENOTDIR, EACCES) is reported and skipped, like find. */
+		if (follow_root && e == ENOENT && frt_stat_at(AT_FDCWD, root, 0, si) == 0) {
 			follow_root = 0; /* classified as the link, not its target */
 		} else {
-			report_error(&we, root, errno);
+			report_error(&we, root, e);
 			goto done;
 		}
 	}
