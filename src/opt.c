@@ -52,6 +52,14 @@ static void flatten(struct expr *e, enum expr_kind kind, struct expr **ops, int 
 	}
 }
 
+/* Number of operands in a maximal `kind` chain (== the count flatten() emits). */
+static int chain_len(const struct expr *e, enum expr_kind kind)
+{
+	if (e->kind == kind)
+		return chain_len(e->lhs, kind) + chain_len(e->rhs, kind);
+	return 1;
+}
+
 /* A before B is cheaper? For AND we want cheap, likely-to-fail tests first; for
  * OR, cheap likely-to-succeed first. Pairwise comparison of the two orderings. */
 static int prefer_ab(enum expr_kind kind, const struct expr *a, const struct expr *b)
@@ -137,17 +145,16 @@ struct expr *frt_optimize(struct expr *e, int level, struct arena *a)
 
 	enum expr_kind kind = e->kind;
 
-	/* flatten the chain into the arena, then optimize each operand. (Copy out of
-	 * the scratch buffer before recursing, since recursion reuses it.) */
-	static struct expr *scratch[4096];
-	int count = 0;
-	flatten(e, kind, scratch, &count);
+	/* Flatten the chain into an arena array sized to the exact operand count
+	 * (no fixed cap — a 100k-operand `-o` chain must not overflow), then
+	 * optimize each operand. The array is per-call, so recursion into nested
+	 * chains allocates its own and can't clobber this one. */
+	int count = chain_len(e, kind);
 	struct expr **tmp = arena_alloc(a, (size_t)count * sizeof(struct expr *));
-	for (int k = 0; k < count; k++)
-		tmp[k] = scratch[k];
+	int n = 0;
+	flatten(e, kind, tmp, &n);
 	for (int k = 0; k < count; k++)
 		tmp[k] = frt_optimize(tmp[k], level, a);
-	int n = count;
 
 	if (level >= 1)
 		reorder(kind, tmp, n);
