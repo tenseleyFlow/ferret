@@ -61,10 +61,15 @@ int frt_expr_needs_stat(const struct expr *e)
 	return frt_expr_needs_stat(e->lhs) || frt_expr_needs_stat(e->rhs);
 }
 
-/* A subexpression is "guardable" if it can be evaluated from the dirent alone
- * (d_name + d_type), with no side effects: every leaf is a -name/-iname/-type/
- * -true/-false test. Such a subexpr needs neither the built path nor (normally)
- * a stat, so it can pre-filter entries before the parallel-stat batch. */
+/* A subexpression is "guardable" if it can be evaluated from the entry name
+ * alone, with no side effects and — critically — no stat: every leaf is a
+ * -name/-iname/-true/-false test. Such a subexpr needs neither the built path
+ * nor a stat, so it can pre-filter entries before the parallel-stat batch.
+ *
+ * -type is deliberately excluded: pred_type falls back to a stat when d_type is
+ * DT_UNKNOWN (XFS ftype=0, many overlay/9p/FUSE mounts, the readdir backend), so
+ * a -type guard would issue a serial fstatat per entry on the walker thread —
+ * defeating the parallel batch the guard exists to feed. */
 static int guardable(const struct expr *e)
 {
 	if (!e)
@@ -73,7 +78,6 @@ static int guardable(const struct expr *e)
 		switch (e->pred) {
 		case PRED_NAME:
 		case PRED_INAME:
-		case PRED_TYPE:
 		case PRED_TRUE:
 		case PRED_FALSE:
 			return 1;

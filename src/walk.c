@@ -350,7 +350,8 @@ static void walk_children(struct walkenv *we, struct frt_dir *d, int depth)
 	if ((we->pool || we->uring) && we->needs_stat && we->ctx.follow == 0 && n > 0) {
 		/* Pre-filter: only entries passing the stat-free guard can match, so
 		 * only they need a stat. With no guard every entry survives (== the old
-		 * stat-all behavior). The guard reads d_name/d_type only — no path. */
+		 * stat-all behavior). The guard reads the entry name only — no path, and
+		 * no stat (so it never serializes the walker; see guardable()). */
 		uint32_t *surv = arena_alloc(&we->arena, n * sizeof *surv);
 		size_t ns = 0;
 		if (we->nguard > 0) {
