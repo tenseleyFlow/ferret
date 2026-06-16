@@ -112,7 +112,7 @@ static char *subst_token(const char *tok, const char *subst)
 
 /* Fork+exec argv. For -execdir, fchdir(dirfd) in the child. Returns child
  * exited-0. Flushes ferret's output first so interleaving matches find. */
-static int run_argv(char **argv, int execdir, int dirfd, struct evalctx *ctx)
+static int run_argv(char **argv, int execdir, int dirfd, int close_stdin, struct evalctx *ctx)
 {
 	out_flush(ctx->out, ctx->out_fd);
 	fflush(NULL);
@@ -125,6 +125,10 @@ static int run_argv(char **argv, int execdir, int dirfd, struct evalctx *ctx)
 	if (pid == 0) {
 		if (execdir && dirfd >= 0 && fchdir(dirfd) != 0)
 			_exit(126);
+		/* -ok/-okdir: find closes the child's stdin so it can't consume the
+		 * input find reads prompts from. */
+		if (close_stdin)
+			close(0);
 		execvp(argv[0], argv);
 		int e = errno;
 		/* same diagnostic + quoting as find (printed from the child). */
@@ -171,7 +175,7 @@ static void batch_flush(struct exec_batch *b, struct evalctx *ctx)
 	b->argv[b->argc] = NULL;
 	/* '+' mode: unlike ';', find propagates a failing batch command to its own
 	 * exit status (non-zero exit, signal death, or exec failure). */
-	if (!run_argv(b->argv, b->dirfd >= 0, b->dirfd, ctx))
+	if (!run_argv(b->argv, b->dirfd >= 0, b->dirfd, 0, ctx)) /* '+' is never -ok */
 		*ctx->exit_status = 1;
 	for (int i = b->init_argc; i < b->argc; i++)
 		free(b->argv[i]);
@@ -196,7 +200,7 @@ bool act_exec(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 		if (e->u.exec.ok && !ask_yes(argv[0], ent->path)) {
 			result = 0;
 		} else {
-			result = run_argv(argv, e->u.exec.execdir, ctx->dirfd, ctx);
+			result = run_argv(argv, e->u.exec.execdir, ctx->dirfd, e->u.exec.ok, ctx);
 		}
 		for (int i = 0; i < n; i++)
 			free(argv[i]);

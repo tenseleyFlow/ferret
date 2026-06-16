@@ -78,6 +78,12 @@ int main(int argc, char **argv)
 		threads = 0; /* engage parallel stat (pool fallback) */
 	if (threads == 0)
 		threads = frt_pool_default_workers();
+	/* Clamp an explicit --ferret-threads N to the auto cap: more workers than
+	 * that never help a stat pass and just burn ~2MB of stack each (a large N
+	 * would spawn hundreds of threads). Output is identical for any N. */
+	int max_workers = frt_pool_default_workers();
+	if (threads > max_workers)
+		threads = max_workers;
 	struct frt_pool *pool = (threads > 1 && needs_stat) ? frt_pool_create(threads) : NULL;
 
 	struct dstr out;
