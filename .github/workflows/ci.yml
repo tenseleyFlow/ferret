@@ -55,6 +55,9 @@ jobs:
         run: make debug
       - name: bench
         run: make bench
+      - name: io_uring vs pool bench (linux, informational)
+        if: runner.os == 'Linux'
+        run: sh bench/uring.sh || true
 
   freebsd:
     runs-on: ubuntu-latest
