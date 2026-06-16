@@ -456,24 +456,37 @@ static struct expr *build_time_pred(struct pstate *ps, struct expr *e, int field
 
 	char *end;
 	double offset = strtod(p, &end);
-	/* reject empty/trailing junk, negatives, NaN (!(>=0)), and inf/huge. */
-	if (end == p || *end != '\0' || !(offset >= 0.0) || offset > 1.0e18) {
+	if (end == p || *end != '\0') { /* empty / non-numeric / trailing junk */
 		set_errorf(ps, "invalid argument `%s' to `%s'", arg, pname);
+		return NULL;
+	}
+	if (offset != offset) { /* NaN (its own message; magnitude is sign-stripped) */
+		set_errorf(ps, "invalid not-a-number argument: `%s'", p);
 		return NULL;
 	}
 	int kind = comp == COMP_LT ? COMP_GT : comp == COMP_GT ? COMP_LT : COMP_EQ;
 
-	/* split offset*unit into whole seconds + fractional ns (modf, truncating
-	 * toward zero — offset is non-negative). Avoids libm. */
+	/* split offset*unit into whole seconds + fractional ns. find accepts inf
+	 * and values far beyond time_t (the reference just lands at -/+infinity, so
+	 * the comparison matches none/all). Saturate to avoid UB casting an
+	 * out-of-range double to long long. Avoids libm. */
 	double total = offset * (double)unit;
-	long long secs_d = (long long)total;
-	double frac = total - (double)secs_d;
-	long nanosec = (long)(frac * 1.0e9);
-	long long rsec = (long long)origin.tv_sec - secs_d;
-	long rnsec = (long)origin.tv_nsec - nanosec;
-	if (rnsec < 0) {
-		rnsec += 1000000000L;
-		rsec -= 1;
+	long long rsec;
+	long rnsec = 0;
+	if (total >= 9.0e18) { /* reference effectively at -infinity */
+		rsec = LLONG_MIN;
+	} else if (total <= -9.0e18) { /* reference effectively at +infinity */
+		rsec = LLONG_MAX;
+	} else {
+		long long secs_d = (long long)total;
+		double frac = total - (double)secs_d;
+		long nanosec = (long)(frac * 1.0e9);
+		rsec = (long long)origin.tv_sec - secs_d;
+		rnsec = (long)origin.tv_nsec - nanosec;
+		if (rnsec < 0) {
+			rnsec += 1000000000L;
+			rsec -= 1;
+		}
 	}
 
 	e->pred = PRED_TIME;
