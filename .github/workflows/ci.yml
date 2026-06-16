@@ -32,6 +32,25 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           if grep -q 'FRT_HAS_LIBURING = 1' config.mk; then FRT_IO=uring make test; fi
+      - name: io_uring actually engages (linux)
+        if: runner.os == 'Linux'
+        run: |
+          grep -q 'FRT_HAS_LIBURING = 1' config.mk || { echo "no liburing; skip"; exit 0; }
+          sudo apt-get install -y strace
+          d=$(mktemp -d); for i in $(seq 1 50); do echo x >"$d/f$i"; done
+          # -size forces a stat with no -name filter, and 50 entries clear the
+          # batch floor, so the io_uring path must fire if it engaged at all.
+          strace -f -e trace=io_uring_setup,openat -o "$d/trace" \
+            env FRT_IO=uring ./ferret "$d" -size +0c >/dev/null 2>&1 || true
+          if ! grep -q openat "$d/trace"; then
+            echo "strace saw no syscalls (ptrace restricted?); cannot verify — skipping"; exit 0
+          fi
+          if grep -q io_uring_setup "$d/trace"; then
+            echo "io_uring engaged ($(grep -c io_uring_setup "$d/trace") setup call(s))"
+          else
+            echo "FAIL: FRT_IO=uring issued no io_uring syscalls — silent fallback to the pool"
+            exit 1
+          fi
       - name: sanitizer build
         run: make debug
       - name: bench
