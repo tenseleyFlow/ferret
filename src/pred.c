@@ -18,7 +18,9 @@ bool pred_name(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 {
 	(void)ctx;
 	/* -name/-iname test the basename (ent->name). */
-	return frt_glob_match(e->u.name.pattern, ent->name, e->u.name.glob_flags);
+	return frt_glob_exec(e->u.name.glob_kind, e->u.name.pattern,
+			     e->u.name.glob_litlen, ent->name, ent->namelen,
+			     e->u.name.glob_flags);
 }
 
 bool pred_type(const struct expr *e, struct entry *ent, struct evalctx *ctx)
@@ -196,7 +198,9 @@ bool pred_path(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 {
 	(void)ctx;
 	/* -path/-ipath glob the whole path; '*' crosses '/'. */
-	return frt_glob_match(e->u.name.pattern, ent->path, e->u.name.glob_flags);
+	return frt_glob_exec(e->u.name.glob_kind, e->u.name.pattern,
+			     e->u.name.glob_litlen, ent->path, ent->pathlen,
+			     e->u.name.glob_flags);
 }
 
 bool pred_lname(const struct expr *e, struct entry *ent, struct evalctx *ctx)
@@ -208,7 +212,9 @@ bool pred_lname(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	if (r < 0)
 		return false;
 	link[r] = '\0';
-	return frt_glob_match(e->u.name.pattern, link, e->u.name.glob_flags);
+	return frt_glob_exec(e->u.name.glob_kind, e->u.name.pattern,
+			     e->u.name.glob_litlen, link, (size_t)r,
+			     e->u.name.glob_flags);
 }
 
 bool pred_xtype(const struct expr *e, struct entry *ent, struct evalctx *ctx)

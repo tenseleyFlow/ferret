@@ -62,7 +62,12 @@ struct expr {
 	bool pure;              /* no side effects (safe to reorder) */
 
 	union {
-		struct { const char *pattern; unsigned glob_flags; } name;
+		struct {
+			const char *pattern;
+			unsigned glob_flags;
+			unsigned glob_litlen;    /* literal run length (fast path) */
+			unsigned char glob_kind; /* FRT_GLOB_* */
+		} name;
 		struct { unsigned mask; } type; /* bitmask over (1u << enum frt_type) */
 		struct { int kind; unsigned long long val; } num; /* -links -inum -uid -gid -user -group */
 		struct { int kind; unsigned long long val; long long unit; } size; /* -size */

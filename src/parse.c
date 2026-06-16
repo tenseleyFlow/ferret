@@ -679,6 +679,8 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->eval = pred_name;
 		e->u.name.pattern = arena_strdup(ps->arena, arg);
 		e->u.name.glob_flags = (name[1] == 'i') ? FRT_GLOB_CASEFOLD : 0;
+		e->u.name.glob_kind = (unsigned char)frt_glob_classify(
+			e->u.name.pattern, e->u.name.glob_flags, &e->u.name.glob_litlen);
 		e->cost = COST_FNMATCH;
 		e->prob = 0.5f;
 		return e;
@@ -720,6 +722,8 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->eval = pred_path;
 		e->u.name.pattern = arena_strdup(ps->arena, arg);
 		e->u.name.glob_flags = name[1] == 'i' ? FRT_GLOB_CASEFOLD : 0;
+		e->u.name.glob_kind = (unsigned char)frt_glob_classify(
+			e->u.name.pattern, e->u.name.glob_flags, &e->u.name.glob_litlen);
 		e->cost = COST_FNMATCH;
 		e->prob = 0.5f;
 		return e;
@@ -735,6 +739,8 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->eval = pred_lname;
 		e->u.name.pattern = arena_strdup(ps->arena, arg);
 		e->u.name.glob_flags = name[1] == 'i' ? FRT_GLOB_CASEFOLD : 0;
+		e->u.name.glob_kind = (unsigned char)frt_glob_classify(
+			e->u.name.pattern, e->u.name.glob_flags, &e->u.name.glob_litlen);
 		e->cost = COST_FNMATCH;
 		e->prob = 0.5f;
 		return e;

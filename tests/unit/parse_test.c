@@ -240,7 +240,7 @@ int main(void)
 		struct parse_result pr;
 		int rc = frt_parse(3, argv, &a, &pr);
 		CHECK("unknown predicate fails", rc == -1 && pr.error != NULL);
-		CHECK_STR("error arg", pr.error_arg, "-bogus");
+		CHECK_STR("error message", pr.error, "unknown predicate `-bogus'");
 	}
 
 	/* missing close paren -> error */
