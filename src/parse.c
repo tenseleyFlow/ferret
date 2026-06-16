@@ -1471,6 +1471,27 @@ static bool looks_like_expr(const char *t)
 	return t[0] == '-' || strcmp(t, "(") == 0 || strcmp(t, "!") == 0;
 }
 
+/* -D help: list the debug flags (find's util.c, %-10s %s, same order). */
+static void print_debug_help(void)
+{
+	static const struct {
+		const char *name, *doc;
+	} d[] = {
+		{"exec", "Show diagnostic information relating to -exec, -execdir, -ok and -okdir"},
+		{"opt", "Show diagnostic information relating to optimisation"},
+		{"rates", "Indicate how often each predicate succeeded"},
+		{"search", "Navigate the directory tree verbosely"},
+		{"stat", "Trace calls to stat(2) and lstat(2)"},
+		{"time", "Show diagnostic information relating to time-of-day and timestamp comparisons"},
+		{"tree", "Display the expression tree"},
+		{"all", "Set all of the debug flags (but help)"},
+		{"help", "Explain the various -D options"},
+	};
+	fputs("Valid arguments for -D:\n", stdout);
+	for (size_t k = 0; k < sizeof d / sizeof *d; k++)
+		printf("%-10s %s\n", d[k].name, d[k].doc);
+}
+
 /* find's check_option_combinations: walk the expression for -delete and -prune. */
 static void scan_delete_prune(const struct expr *e, int *del, int *prune)
 {
@@ -1560,20 +1581,37 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 			i += 2;
 		} else if (strcmp(a, "-D") == 0 && i + 1 < argc) {
 			const char *d = argv[i + 1];
-			/* comma-separated debug words; we honor tree/opt/all, accept
-			 * the rest (help/search/stat/rates/exec/time) as no-ops. */
+			/* comma-separated debug words; honor tree/opt/all, print help, and
+			 * accept search/stat/rates/exec/time as no-ops. find warns (to
+			 * stderr, rc unchanged) on any unrecognised word. */
+			int want_help = 0;
 			for (const char *p = d; *p;) {
 				const char *q = p;
 				while (*q && *q != ',')
 					q++;
 				size_t len = (size_t)(q - p);
-				if (len == 4 && strncmp(p, "tree", 4) == 0)
+#define WORD_IS(s) (len == strlen(s) && strncmp(p, s, len) == 0)
+				if (WORD_IS("tree"))
 					out->opts.debug |= FRT_DBG_TREE;
-				else if (len == 3 && strncmp(p, "opt", 3) == 0)
+				else if (WORD_IS("opt"))
 					out->opts.debug |= FRT_DBG_OPT;
-				else if (len == 3 && strncmp(p, "all", 3) == 0)
+				else if (WORD_IS("all"))
 					out->opts.debug |= FRT_DBG_TREE | FRT_DBG_OPT;
+				else if (WORD_IS("help"))
+					want_help = 1;
+				else if (WORD_IS("search") || WORD_IS("stat") ||
+					 WORD_IS("rates") || WORD_IS("exec") || WORD_IS("time"))
+					; /* recognised, no-op */
+				else
+					fprintf(stderr,
+						"ferret: Ignoring unrecognised debug flag %s%.*s%s\n",
+						q_open(), (int)len, p, q_close());
+#undef WORD_IS
 				p = *q ? q + 1 : q;
+			}
+			if (want_help) { /* find: print the list and exit, no traversal */
+				print_debug_help();
+				exit(EXIT_SUCCESS);
 			}
 			i += 2;
 		} else {

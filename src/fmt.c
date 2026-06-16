@@ -1,11 +1,13 @@
 #include "fmt.h"
 #include "eval.h"
 #include "action.h"
+#include "diag.h"
 #include "outfile.h"
 #include "util.h"
 #include "sys/xstat.h"
 #include "sys/fs.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
 #include <math.h> /* HUGE_VAL (constant only; no libm link) */
@@ -307,7 +309,7 @@ struct fmt *fmt_compile(const char *format, struct arena *a, const char **errmsg
 				continue;
 			}
 			if (*p == '\0') {
-				*errmsg = "format error: % at end of format string";
+				*errmsg = "error: % at end of format string";
 				return NULL;
 			}
 			/* Measure the flags/width/precision span, then allocate a
@@ -654,10 +656,19 @@ static void render_dir(const struct segment *s, struct entry *ent, struct evalct
 			letter = mode_type_letter(st->mode);
 		} else {
 			struct frt_statinfo tgt;
-			if (frt_stat_at(ctx->dirfd, ctx->statname, 1, &tgt) == 0)
+			if (frt_stat_at(ctx->dirfd, ctx->statname, 1, &tgt) == 0) {
 				letter = mode_type_letter(tgt.mode);
-			else
-				letter = "N";
+			} else {
+				int e = errno;
+				if (e == ENOENT || e == ENOTDIR)
+					letter = "N";
+				else if (e == ELOOP)
+					letter = "L";
+				else {
+					letter = "?"; /* find also warns, without changing rc */
+					frt_diag_errno("", ent->path, e);
+				}
+			}
 		}
 		emit_spec_str(out, s->spec, letter);
 		break;
