@@ -15,7 +15,41 @@ byte for byte, and it is faster on the workloads measured.
 The man page is filled in as the predicate and action surface lands (sprint 11);
 see the GNU
 .BR find (1)
-manual for the expression language.
+manual for the expression language. The tests below are ferret extensions that
+GNU find does not provide.
+.SH FERRET EXTENSIONS
+.TP
+.BI \-contains " string"
+True if
+.I file
+is a regular file whose contents contain
+.I string
+as a byte substring. Non-regular files never match. The match is binary-safe
+(NUL bytes are matched literally) and the file is streamed in a bounded window,
+so memory use does not scale with file size. The cost model ranks this test
+above a stat, so cheaper predicates run first and content is read only for files
+that already pass them \(em e.g.
+.B \-name '*.c' \-mtime \-1 \-contains TODO
+reads only recently\-modified C files.
+.TP
+.BI \-icontains " string"
+Like
+.BR \-contains ,
+but the match folds ASCII case (locale\-independent).
+.TP
+.BI \-\-ferret\-threads " n"
+Worker count for the parallel stat pass (a global option, given before the
+expression).
+.B 1
+forces a serial walk,
+.B 0
+forces all CPUs, and
+.I n
+sets an explicit count. Omitted, ferret decides per query: it engages the pool
+only for a stat\-bound, physical (\fB\-P\fR) walk with no
+.B \-name
+filter, where every entry would be stat'd anyway. Output is byte\-identical for
+any worker count.
 .SH EXIT STATUS
 .B 0
 all operands processed successfully;
