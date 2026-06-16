@@ -30,6 +30,14 @@
 #define COST_STAT 1000.0f
 #define COST_PRINT 20000.0f
 
+/* Bound on '(' nesting and on the length of a single AND/OR/comma chain. The
+ * parser, the optimizer (annotate/flatten), and eval_expr all recurse to the
+ * expression-tree depth; a pathological input (tens of thousands of nested
+ * parens or chained predicates) would otherwise overflow the C stack and
+ * SIGSEGV. find handles such input (slowly); ferret rejects it cleanly past
+ * this cap, well above any real expression. Recorded in deviations.md. */
+#define FRT_EXPR_DEPTH_MAX 4000
+
 /* ---- parser state ---------------------------------------------------------- */
 
 struct pstate {
@@ -40,6 +48,7 @@ struct pstate {
 	struct options *opts;     /* positional options write here */
 	struct outfile **outfiles; /* -f* destination registry */
 	const char *error;     /* set on failure: complete message body */
+	int paren_depth;       /* '(' nesting, capped to bound parser C-recursion */
 	bool has_action;       /* any action seen => suppress implicit -print */
 	/* time origin (find: start_time; cur_day_start defaults to start-DAYSECS,
 	 * -daystart floors it to local midnight; positional — affects later tests). */
@@ -1334,6 +1343,11 @@ static struct expr *parse_primary(struct pstate *ps, const char *prev)
 	const char *t = cur(ps);
 	if (strcmp(t ? t : "", "(") == 0) {
 		advance(ps);
+		if (++ps->paren_depth > FRT_EXPR_DEPTH_MAX) {
+			set_errorf(ps, "expression nesting too deep (limit %d)",
+				   FRT_EXPR_DEPTH_MAX);
+			return NULL;
+		}
 		if (!cur(ps)) {
 			set_errorf(ps, "invalid expression; expected to find a ')' but "
 				       "didn't see one. Perhaps you need an extra "
@@ -1348,6 +1362,7 @@ static struct expr *parse_primary(struct pstate *ps, const char *prev)
 		struct expr *e = parse_comma(ps, "(");
 		if (!e)
 			return NULL;
+		ps->paren_depth--;
 		if (!cur(ps) || strcmp(cur(ps), ")") != 0) {
 			ps->error = "invalid expression; I was expecting to find a ')' somewhere "
 				    "but did not see one.";
@@ -1394,24 +1409,27 @@ static struct expr *parse_and(struct pstate *ps, const char *prev)
 	struct expr *left = parse_not(ps, prev);
 	if (!left)
 		return NULL;
+	int n = 0;
 	for (;;) {
 		const char *t = cur(ps);
+		struct expr *right;
 		if (tok_is(t, "-a", "-and")) {
 			const char *op = t;
 			advance(ps);
-			struct expr *right = parse_not(ps, op);
-			if (!right)
-				return NULL;
-			left = mk_binop(ps, EXPR_AND, left, right);
+			right = parse_not(ps, op);
 		} else if (starts_primary(t)) {
-			/* juxtaposition = implicit AND */
-			struct expr *right = parse_not(ps, t);
-			if (!right)
-				return NULL;
-			left = mk_binop(ps, EXPR_AND, left, right);
+			right = parse_not(ps, t); /* juxtaposition = implicit AND */
 		} else {
 			break;
 		}
+		if (!right)
+			return NULL;
+		if (++n > FRT_EXPR_DEPTH_MAX) {
+			set_errorf(ps, "expression too large (limit %d operands)",
+				   FRT_EXPR_DEPTH_MAX);
+			return NULL;
+		}
+		left = mk_binop(ps, EXPR_AND, left, right);
 	}
 	return left;
 }
@@ -1421,12 +1439,18 @@ static struct expr *parse_or(struct pstate *ps, const char *prev)
 	struct expr *left = parse_and(ps, prev);
 	if (!left)
 		return NULL;
+	int n = 0;
 	while (tok_is(cur(ps), "-o", "-or")) {
 		const char *op = cur(ps);
 		advance(ps);
 		struct expr *right = parse_and(ps, op);
 		if (!right)
 			return NULL;
+		if (++n > FRT_EXPR_DEPTH_MAX) {
+			set_errorf(ps, "expression too large (limit %d operands)",
+				   FRT_EXPR_DEPTH_MAX);
+			return NULL;
+		}
 		left = mk_binop(ps, EXPR_OR, left, right);
 	}
 	return left;
@@ -1437,12 +1461,18 @@ static struct expr *parse_comma(struct pstate *ps, const char *prev)
 	struct expr *left = parse_or(ps, prev);
 	if (!left)
 		return NULL;
+	int n = 0;
 	while (cur(ps) && strcmp(cur(ps), ",") == 0) {
 		const char *op = cur(ps);
 		advance(ps);
 		struct expr *right = parse_or(ps, op);
 		if (!right)
 			return NULL;
+		if (++n > FRT_EXPR_DEPTH_MAX) {
+			set_errorf(ps, "expression too large (limit %d operands)",
+				   FRT_EXPR_DEPTH_MAX);
+			return NULL;
+		}
 		left = mk_binop(ps, EXPR_COMMA, left, right);
 	}
 	return left;
