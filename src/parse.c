@@ -301,8 +301,13 @@ static int parse_size_arg(const char *s, int *kind, unsigned long long *val, lon
 	return 0;
 }
 
-/* Parse an octal or symbolic mode (starting from 0, as -perm requires). 0/-1. */
-static int parse_mode_str(const char *s, unsigned *out)
+/* Parse an octal or symbolic mode (base 0, as -perm requires). `x_as_exec`
+ * controls whether the conditional `X` contributes the execute bit (find
+ * resolves X per file; the caller parses once each way and picks at match
+ * time). Returns 0 / -1. Symbolic grammar matches chmod / gnulib modechange:
+ *   [ugoa]* ( [-+=] [rwxXstugo]* )+  (',' clause)*
+ * with `u`/`g`/`o` in the perms position copying that class's current bits. */
+static int parse_mode_str(const char *s, int x_as_exec, unsigned *out)
 {
 	if (!s || !*s)
 		return -1;
@@ -314,16 +319,18 @@ static int parse_mode_str(const char *s, unsigned *out)
 		}
 	if (octal) {
 		unsigned v = 0;
-		for (const char *p = s; *p; p++)
+		for (const char *p = s; *p; p++) {
 			v = v * 8u + (unsigned)(*p - '0');
-		*out = v & 07777u;
+			if (v > 07777u)
+				return -1; /* find rejects modes >= 010000 */
+		}
+		*out = v;
 		return 0;
 	}
 
-	/* symbolic: comma-separated [ugoa]*[+-=][rwxXst]* clauses, base 0 */
 	unsigned mode = 0;
 	const char *p = s;
-	while (*p) {
+	for (;;) {
 		unsigned who = 0;
 		int who_set = 0;
 		for (; *p; p++) {
@@ -338,55 +345,65 @@ static int parse_mode_str(const char *s, unsigned *out)
 			else
 				break;
 		}
+		unsigned eff_who = who_set ? who : 0777u; /* bare op = all classes */
 		if (*p != '+' && *p != '-' && *p != '=')
-			return -1;
-		char op = *p++;
-		if (!who_set)
-			who = 0777u;
-		unsigned rwx = 0, sbit = 0, tbit = 0;
-		for (; *p && *p != ','; p++) {
-			switch (*p) {
-			case 'r': rwx |= 4u; break;
-			case 'w': rwx |= 2u; break;
-			case 'x': rwx |= 1u; break;
-			case 's': sbit = 1; break;
-			case 't': tbit = 1; break;
-			case 'X': break; /* conditional-x: no file context at parse, treat as 0 */
-			default:  return -1;
+			return -1; /* a clause needs at least one operator */
+		/* one or more [op][perms] sub-clauses sharing this who */
+		do {
+			char op = *p++;
+			unsigned rwx = 0, sbit = 0, tbit = 0;
+			for (; *p && *p != ',' && *p != '+' && *p != '-' && *p != '='; p++) {
+				switch (*p) {
+				case 'r': rwx |= 4u; break;
+				case 'w': rwx |= 2u; break;
+				case 'x': rwx |= 1u; break;
+				case 'X': if (x_as_exec) rwx |= 1u; break;
+				case 's': sbit = 1; break;
+				case 't': tbit = 1; break;
+				case 'u': rwx |= (mode >> 6) & 7u; break; /* copy from user */
+				case 'g': rwx |= (mode >> 3) & 7u; break; /* copy from group */
+				case 'o': rwx |= mode & 7u; break;        /* copy from other */
+				default:  return -1;
+				}
 			}
-		}
-		unsigned value = 0;
-		if (who & 0700u)
-			value |= rwx << 6;
-		if (who & 0070u)
-			value |= rwx << 3;
-		if (who & 0007u)
-			value |= rwx;
-		if (sbit) {
-			if (who & 0700u)
-				value |= 04000u;
-			if (who & 0070u)
-				value |= 02000u;
-		}
-		if (tbit)
-			value |= 01000u;
+			unsigned value = 0;
+			if (eff_who & 0700u)
+				value |= rwx << 6;
+			if (eff_who & 0070u)
+				value |= rwx << 3;
+			if (eff_who & 0007u)
+				value |= rwx;
+			if (sbit) {
+				if (eff_who & 0700u)
+					value |= 04000u;
+				if (eff_who & 0070u)
+					value |= 02000u;
+			}
+			if (tbit)
+				value |= 01000u;
 
-		if (op == '+')
-			mode |= value;
-		else if (op == '-')
-			mode &= ~value;
-		else { /* '=' clears the affected who triples (and their special bits) */
-			unsigned clear = 0;
-			if (who & 0700u)
-				clear |= 0700u | 04000u;
-			if (who & 0070u)
-				clear |= 0070u | 02000u;
-			if (who & 0007u)
-				clear |= 0007u | 01000u;
-			mode = (mode & ~clear) | value;
-		}
-		if (*p == ',')
-			p++;
+			if (op == '+')
+				mode |= value;
+			else if (op == '-')
+				mode &= ~value;
+			else { /* '=' clears the affected who triples + their special bits */
+				unsigned clear = 0;
+				if (eff_who & 0700u)
+					clear |= 0700u | 04000u;
+				if (eff_who & 0070u)
+					clear |= 0070u | 02000u;
+				if (eff_who & 0007u)
+					clear |= 0007u | 01000u;
+				mode = (mode & ~clear) | value;
+			}
+		} while (*p == '+' || *p == '-' || *p == '=');
+		if (*p == '\0')
+			break;
+		if (*p != ',')
+			return -1;
+		p++;
+		if (*p == '\0')
+			return -1; /* trailing comma rejected */
 	}
 	*out = mode & 07777u;
 	return 0;
@@ -911,16 +928,28 @@ static struct expr *parse_predicate(struct pstate *ps)
 			set_errorf(ps, "invalid mode %s%s%s", q_open(), arg, q_close());
 			return NULL;
 		}
-		unsigned mode;
-		if (parse_mode_str(m, &mode) != 0) {
+		unsigned mode, mode_x;
+		/* Parse twice: once with the conditional X off, once on. pred_perm
+		 * picks per file (X = execute iff dir or already executable). */
+		if (parse_mode_str(m, 0, &mode) != 0 || parse_mode_str(m, 1, &mode_x) != 0) {
 			set_errorf(ps, "invalid mode %s%s%s", q_open(), arg, q_close());
 			return NULL;
 		}
+		/* find warns (unconditionally, even with -nowarn) when a '/' mask
+		 * resolves to 0, since -perm /000 now matches everything. */
+		if (match == PERM_ANY && mode == 0 && mode_x == 0)
+			fprintf(stderr,
+				"ferret: warning: you have specified a mode pattern %s (which is "
+				"equivalent to /000). The meaning of -perm /000 has now been "
+				"changed to be consistent with -perm -000; that is, while it used "
+				"to match no files, it now matches all files.\n",
+				arg);
 		e->pred = PRED_PERM;
 		e->eval = pred_perm;
 		e->needs_stat = true;
 		e->u.perm.match = match;
 		e->u.perm.mode = mode;
+		e->u.perm.mode_x = mode_x;
 		e->cost = COST_STAT;
 		e->prob = 0.5f;
 		return e;

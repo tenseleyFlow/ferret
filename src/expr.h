@@ -66,7 +66,7 @@ struct expr {
 		struct { unsigned mask; } type; /* bitmask over (1u << enum frt_type) */
 		struct { int kind; unsigned long long val; } num; /* -links -inum -uid -gid -user -group */
 		struct { int kind; unsigned long long val; long long unit; } size; /* -size */
-		struct { int match; unsigned mode; } perm;                /* -perm */
+		struct { int match; unsigned mode; unsigned mode_x; } perm; /* -perm; mode_x = X-as-execute */
 		struct { dev_t dev; ino_t ino; } samefile;                /* -samefile */
 		struct { int amode; } access;                             /* R_OK/W_OK/X_OK */
 		struct {

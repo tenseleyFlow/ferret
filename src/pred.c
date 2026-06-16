@@ -165,7 +165,10 @@ bool pred_perm(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	if (!st)
 		return false;
 	unsigned bits = (unsigned)st->mode & 07777u;
-	unsigned m = e->u.perm.mode;
+	/* conditional X resolves per file: execute iff a directory or already has
+	 * any execute bit (gnulib mode_adjust). */
+	int x = S_ISDIR(st->mode) || (st->mode & 0111);
+	unsigned m = x ? e->u.perm.mode_x : e->u.perm.mode;
 	switch (e->u.perm.match) {
 	case PERM_EXACT: return bits == m;
 	case PERM_ALL:   return (bits & m) == m;
