@@ -795,6 +795,10 @@ static struct expr *parse_predicate(struct pstate *ps)
 		int kind;
 		unsigned long long val;
 		long long unit;
+		if (arg[0] == '\0') { /* find has a specific message for the empty arg */
+			set_errorf(ps, "invalid null argument to -size");
+			return NULL;
+		}
 		char bad = 0;
 		int rc = parse_size_arg(arg, &kind, &val, &unit, &bad);
 		if (rc == -2) {
@@ -1032,7 +1036,10 @@ static struct expr *parse_predicate(struct pstate *ps)
 		}
 		const char *arg = cur(ps);
 		if (!arg) {
-			set_errorf(ps, "missing argument to `%s'", name);
+			/* the 8-char -newerXY family uses a different missing-arg wording
+			 * than the -newer/-anewer/-cnewer "missing argument to" form. */
+			set_errorf(ps, "The %s%s%s test needs an argument", q_open(), name,
+				   q_close());
 			return NULL;
 		}
 		advance(ps);
@@ -1285,6 +1292,13 @@ static struct expr *parse_predicate(struct pstate *ps)
 		return e;
 	}
 
+	/* A non-dash token where a predicate was expected is a misplaced path
+	 * (find: "paths must precede expression"); reserve "unknown predicate" for
+	 * '-'-prefixed tokens. ( ) ! , are consumed by the parser before here. */
+	if (name[0] != '-') {
+		set_errorf(ps, "paths must precede expression: `%s'", name);
+		return NULL;
+	}
 	set_errorf(ps, "unknown predicate `%s'", name);
 	return NULL;
 }
@@ -1359,6 +1373,9 @@ static struct expr *parse_not(struct pstate *ps, const char *prev)
 		if (is_binop(t))
 			set_errorf(ps, "invalid expression; you have used a binary "
 				       "operator '%s' with nothing before it.", t);
+		else if (t && strcmp(t, ")") == 0)
+			set_errorf(ps, "expected an expression between '%s' and ')'",
+				   prev ? prev : "(");
 		else
 			set_errorf(ps, "expected an expression after '%s'",
 				   prev ? prev : "(");
@@ -1448,8 +1465,10 @@ static struct expr *mk_print_leaf(struct pstate *ps)
 
 static bool looks_like_expr(const char *t)
 {
-	return t[0] == '-' || strcmp(t, "(") == 0 || strcmp(t, ")") == 0 ||
-	       strcmp(t, "!") == 0 || strcmp(t, ",") == 0;
+	/* ')' and ',' cannot begin an expression in find's grammar, so a leading
+	 * one is a path (find walks it, then errors on the bad name). Only '-foo',
+	 * '(' and '!' start the expression. */
+	return t[0] == '-' || strcmp(t, "(") == 0 || strcmp(t, "!") == 0;
 }
 
 /* find's check_option_combinations: walk the expression for -delete and -prune. */
@@ -1604,11 +1623,11 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 			return -1;
 		}
 		if (ps.i < ps.argc) {
-			/* leftover tokens (e.g. a stray ')') */
+			/* leftover tokens: a dangling ')' here means an unmatched close
+			 * (the unmatched-open case is handled inside parse_primary). */
 			out->error = ps.error ? ps.error : "invalid expression";
 			if (strcmp(argv[ps.i], ")") == 0)
-				out->error = "invalid expression; I was expecting to find a "
-					     "')' somewhere but did not see one.";
+				out->error = "you have too many ')'";
 			return -1;
 		}
 	}
