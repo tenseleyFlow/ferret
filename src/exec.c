@@ -1,3 +1,4 @@
+#include "config.h"
 #include "exec.h"
 #include "action.h"
 #include "diag.h"
@@ -11,6 +12,38 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if !FRT_HAS_RPMATCH
+#include <langinfo.h>
+#include <regex.h>
+#endif
+
+/* glibc/BSD/macOS ship rpmatch; musl does not. Match its contract: 1 if the
+ * reply matches the locale's YESEXPR, 0 if NOEXPR, -1 otherwise (the -ok prompt
+ * only consumes >0). The fallback mirrors glibc — compile YESEXPR/NOEXPR and
+ * test them — so a non-C locale behaves the same on musl as elsewhere. */
+static int frt_rpmatch(const char *s)
+{
+#if FRT_HAS_RPMATCH
+	return rpmatch(s);
+#else
+	regex_t re;
+	const char *yes = nl_langinfo(YESEXPR);
+	if (yes && regcomp(&re, yes, REG_EXTENDED | REG_NOSUB) == 0) {
+		int m = regexec(&re, s, 0, NULL, 0) == 0;
+		regfree(&re);
+		if (m)
+			return 1;
+	}
+	const char *no = nl_langinfo(NOEXPR);
+	if (no && regcomp(&re, no, REG_EXTENDED | REG_NOSUB) == 0) {
+		int m = regexec(&re, s, 0, NULL, 0) == 0;
+		regfree(&re);
+		if (m)
+			return 0;
+	}
+	return -1;
+#endif
+}
 
 /* '+' batch accumulator (one per -exec/-execdir + node). */
 struct exec_batch {
@@ -165,7 +198,7 @@ static int ask_yes(const char *prog, const char *path)
 	char buf[512];
 	if (!fgets(buf, sizeof buf, stdin))
 		return 0;
-	return rpmatch(buf) > 0;
+	return frt_rpmatch(buf) > 0;
 }
 
 static void batch_flush(struct exec_batch *b, struct evalctx *ctx)

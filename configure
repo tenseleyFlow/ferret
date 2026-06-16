@@ -63,6 +63,13 @@ HAS_PTHREAD=$(try_compile pthread '
 #include <pthread.h>
 int main(void){ return (int)pthread_self()==0; }' '-lpthread')
 
+# rpmatch (locale yes/no for -ok/-okdir prompts): glibc/BSD/macOS have it; musl
+# does not. When absent, exec.c falls back to nl_langinfo(YESEXPR) + regexec.
+HAS_RPMATCH=$(try_compile rpmatch '
+#define _GNU_SOURCE
+#include <stdlib.h>
+int main(void){ return rpmatch("y"); }' '')
+
 # We do NOT link -lpthread: the stat pool dlopen()s the thread runtime on demand
 # (pool.c), so a serial run pays none of libthr's startup cost. We only need
 # dlopen/dlsym — in libc on FreeBSD/musl/macOS and glibc>=2.34, else via -ldl.
@@ -115,6 +122,7 @@ cat > config.h <<EOF
 #define FRT_HAS_STATX          $HAS_STATX
 #define FRT_HAS_LIBURING       $HAS_LIBURING
 #define FRT_HAS_PTHREAD        $HAS_PTHREAD
+#define FRT_HAS_RPMATCH        $HAS_RPMATCH
 #define FRT_HAS_ST_MTIM        $HAS_ST_MTIM
 #define FRT_HAS_ST_MTIMESPEC   $HAS_ST_MTIMESPEC
 #define FRT_HAS_ST_BIRTHTIM    $HAS_ST_BIRTHTIM
