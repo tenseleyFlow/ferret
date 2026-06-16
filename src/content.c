@@ -74,7 +74,13 @@ int frt_file_contains(int dirfd, const char *name, const char *needle,
 	int found = 0;
 	size_t carry = 0; /* bytes retained from the previous chunk (overlap) */
 	for (;;) {
-		ssize_t r = read(fd, buf + carry, CONTENT_BUF - carry);
+		/* carry never reaches CONTENT_BUF (keep is capped below it), but pin the
+		 * bound here so the read count is provably in [1, CONTENT_BUF] — else a
+		 * fortified read() (glibc _FORTIFY_SOURCE) sees a possible SIZE_MAX. */
+		if (carry >= CONTENT_BUF)
+			carry = CONTENT_BUF - 1;
+		size_t room = CONTENT_BUF - carry;
+		ssize_t r = read(fd, buf + carry, room);
 		if (r < 0) {
 			if (errno == EINTR)
 				continue;
