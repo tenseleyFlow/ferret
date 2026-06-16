@@ -2,6 +2,7 @@
 #include "eval.h"
 #include "action.h"
 #include "diag.h"
+#include "idcache.h"
 #include "outfile.h"
 #include "util.h"
 #include "sys/xstat.h"
@@ -9,9 +10,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <grp.h>
 #include <math.h> /* HUGE_VAL (constant only; no libm link) */
-#include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -576,9 +575,9 @@ static void render_dir(const struct segment *s, struct entry *ent, struct evalct
 		emit_spec_str(out, s->spec, val);
 		break;
 	case 'u': {
-		struct passwd *pw = getpwuid(st->uid);
-		if (pw)
-			emit_spec_str(out, s->spec, pw->pw_name);
+		const char *nm = frt_uid_name(st->uid);
+		if (nm)
+			emit_spec_str(out, s->spec, nm);
 		else {
 			snprintf(val, sizeof val, "%llu", (unsigned long long)st->uid);
 			emit_spec_str(out, s->spec, val);
@@ -586,9 +585,9 @@ static void render_dir(const struct segment *s, struct entry *ent, struct evalct
 		break;
 	}
 	case 'g': {
-		struct group *gr = getgrgid(st->gid);
-		if (gr)
-			emit_spec_str(out, s->spec, gr->gr_name);
+		const char *nm = frt_gid_name(st->gid);
+		if (nm)
+			emit_spec_str(out, s->spec, nm);
 		else {
 			snprintf(val, sizeof val, "%llu", (unsigned long long)st->gid);
 			emit_spec_str(out, s->spec, val);
@@ -783,23 +782,23 @@ bool act_ls(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	dstr_appendc(out, ' ');
 
 	char buf[128];
-	struct passwd *pw = getpwuid(st->uid);
-	if (pw) {
-		int len = (int)strlen(pw->pw_name);
+	const char *owner = frt_uid_name(st->uid);
+	if (owner) {
+		int len = (int)strlen(owner);
 		if (len > ls_w_owner)
 			ls_w_owner = len;
-		snprintf(buf, sizeof buf, "%-*s ", ls_w_owner, pw->pw_name);
+		snprintf(buf, sizeof buf, "%-*s ", ls_w_owner, owner);
 	} else {
 		snprintf(buf, sizeof buf, "%-8llu ", (unsigned long long)st->uid);
 	}
 	dstr_appendz(out, buf);
 
-	struct group *gr = getgrgid(st->gid);
-	if (gr) {
-		int len = (int)strlen(gr->gr_name);
+	const char *group = frt_gid_name(st->gid);
+	if (group) {
+		int len = (int)strlen(group);
 		if (len > ls_w_group)
 			ls_w_group = len;
-		snprintf(buf, sizeof buf, "%-*s ", ls_w_group, gr->gr_name);
+		snprintf(buf, sizeof buf, "%-*s ", ls_w_group, group);
 	} else {
 		snprintf(buf, sizeof buf, "%-*llu ", ls_w_group, (unsigned long long)st->gid);
 	}

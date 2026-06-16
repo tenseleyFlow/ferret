@@ -2,14 +2,13 @@
 #include "glob.h"
 #include "xregex.h"
 #include "diag.h"
+#include "idcache.h"
 #include "sys/dir.h"
 #include "sys/xstat.h"
 #include "sys/fs.h"
 
 #include <errno.h>
 #include <fcntl.h>
-#include <grp.h>
-#include <pwd.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -139,7 +138,7 @@ bool pred_nouser(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	const struct frt_statinfo *st = entry_stat(ent, ctx);
 	if (!st)
 		return false;
-	return getpwuid(st->uid) == NULL;
+	return frt_uid_name(st->uid) == NULL;
 }
 
 bool pred_nogroup(const struct expr *e, struct entry *ent, struct evalctx *ctx)
@@ -148,7 +147,7 @@ bool pred_nogroup(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	const struct frt_statinfo *st = entry_stat(ent, ctx);
 	if (!st)
 		return false;
-	return getgrgid(st->gid) == NULL;
+	return frt_gid_name(st->gid) == NULL;
 }
 
 bool pred_samefile(const struct expr *e, struct entry *ent, struct evalctx *ctx)
