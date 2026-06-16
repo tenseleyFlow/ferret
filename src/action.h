@@ -18,5 +18,7 @@ bool act_quit(const struct expr *e, struct entry *ent, struct evalctx *ctx);
 void out_maybe_flush(struct evalctx *ctx);
 /* Drain whatever remains (call once at the end of the run). */
 void out_flush(struct dstr *out, int fd);
+/* errno of the first stdout write failure (0 if none), checked after the final flush. */
+int frt_out_write_errno(void);
 
 #endif /* FRT_ACTION_H */

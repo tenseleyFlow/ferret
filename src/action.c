@@ -11,16 +11,28 @@
 /* Accumulate output and drain in large chunks (avoids per-entry write(2)). */
 #define OUT_FLUSH_THRESHOLD (256u * 1024u)
 
+/* errno of the first stdout write failure (sticky). out_flush is only ever used
+ * for the stdout buffer; -f* files track their error on the outfile struct. */
+static int g_out_err;
+
 void out_flush(struct dstr *out, int fd)
 {
 	size_t off = 0;
 	while (off < out->len) {
 		ssize_t w = write(fd, out->data + off, out->len - off);
-		if (w < 0)
-			break; /* output error; nothing useful to do mid-drain */
+		if (w < 0) {
+			if (!g_out_err)
+				g_out_err = errno;
+			break; /* output error; record it, give up on this drain */
+		}
 		off += (size_t)w;
 	}
 	dstr_clear(out);
+}
+
+int frt_out_write_errno(void)
+{
+	return g_out_err;
 }
 
 void out_maybe_flush(struct evalctx *ctx)
@@ -41,7 +53,9 @@ bool act_print(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	struct dstr *out = frt_out_dest(e, ctx);
 	dstr_append(out, ent->path, ent->pathlen);
 	dstr_appendc(out, e->u.pf.zero ? '\0' : '\n');
-	if (!e->u.pf.dest)
+	if (e->u.pf.dest)
+		frt_outfile_maybe_flush(e->u.pf.dest);
+	else
 		out_maybe_flush(ctx);
 	return true;
 }

@@ -706,7 +706,9 @@ bool act_printf(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 	struct dstr *out = frt_out_dest(e, ctx);
 	int fd = e->u.pf.dest ? e->u.pf.dest->fd : ctx->out_fd;
 	fmt_render(e->u.pf.fmt, ent, ctx, out, fd);
-	if (!e->u.pf.dest)
+	if (e->u.pf.dest)
+		frt_outfile_maybe_flush(e->u.pf.dest);
+	else
 		out_maybe_flush(ctx);
 	return true;
 }
@@ -837,7 +839,9 @@ bool act_ls(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 		}
 	}
 	dstr_appendc(out, '\n');
-	if (!e->u.pf.dest)
+	if (e->u.pf.dest)
+		frt_outfile_maybe_flush(e->u.pf.dest);
+	else
 		out_maybe_flush(ctx);
 	return true;
 }

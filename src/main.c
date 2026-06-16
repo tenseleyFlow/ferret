@@ -101,7 +101,14 @@ int main(int argc, char **argv)
 	frt_exec_flush_pending(pr.expr, &out, 1, &exit_status);
 
 	out_flush(&out, 1);
-	frt_outfile_flush_all(pr.outfiles); /* -fprint/-fprintf/-fls destinations */
+	int werr = frt_out_write_errno(); /* sticky across all stdout flushes */
+	if (werr) {
+		/* find reports both the stream-error line and the close-stdout line. */
+		frt_diag_errno("", "standard output", werr);
+		fprintf(stderr, "ferret: write error: %s\n", strerror(werr));
+		exit_status = 1;
+	}
+	frt_outfile_flush_all(pr.outfiles, &exit_status); /* -fprint/-fprintf/-fls dests */
 	dstr_free(&out);
 	arena_destroy(&arena);
 	return exit_status;
