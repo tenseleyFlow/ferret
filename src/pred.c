@@ -1,6 +1,7 @@
 #include "pred.h"
 #include "glob.h"
 #include "xregex.h"
+#include "content.h"
 #include "diag.h"
 #include "idcache.h"
 #include "sys/dir.h"
@@ -248,6 +249,25 @@ bool pred_regex(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 {
 	(void)ctx;
 	return frt_regex_match(e->u.regex, ent->path, ent->pathlen);
+}
+
+/* -contains/-icontains (ferret extension): true if the file's content holds the
+ * needle. Only regular files are inspected; everything else is false (no error).
+ * An open/read failure is reported like find's other I/O errors (stderr, exit 1). */
+bool pred_contains(const struct expr *e, struct entry *ent, struct evalctx *ctx)
+{
+	const struct frt_statinfo *st = entry_stat(ent, ctx);
+	if (!st || !S_ISREG(st->mode))
+		return false;
+	int err = 0;
+	int hit = frt_file_contains(ctx->dirfd, ctx->statname, e->u.contains.needle,
+				    e->u.contains.needle_len, e->u.contains.icase, &err);
+	if (err) {
+		frt_diag_errno("", ent->path, err);
+		*ctx->exit_status = 1;
+		return false;
+	}
+	return hit != 0;
 }
 
 bool pred_time(const struct expr *e, struct entry *ent, struct evalctx *ctx)

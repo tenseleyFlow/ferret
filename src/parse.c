@@ -801,6 +801,24 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->prob = 0.5f;
 		return e;
 	}
+	if (strcmp(name, "-contains") == 0 || strcmp(name, "-icontains") == 0) {
+		/* ferret extension: substring match on file content. */
+		const char *arg = cur(ps);
+		if (!arg) {
+			set_errorf(ps, "missing argument to `%s'", name);
+			return NULL;
+		}
+		advance(ps);
+		e->pred = PRED_CONTAINS;
+		e->eval = pred_contains;
+		e->u.contains.needle = arena_strdup(ps->arena, arg);
+		e->u.contains.needle_len = strlen(arg);
+		e->u.contains.icase = (name[1] == 'i');
+		e->needs_stat = true;        /* regular-file check + opens the file */
+		e->cost = 50.0f * COST_STAT; /* reads content: runs after every cheap test */
+		e->prob = 0.5f;
+		return e;
+	}
 	if (strcmp(name, "-regextype") == 0) {
 		const char *arg = cur(ps);
 		if (!arg) {

@@ -38,6 +38,7 @@ enum pred_id {
 	PRED_SIZE, PRED_LINKS, PRED_INUM, PRED_UID, PRED_GID,
 	PRED_NOUSER, PRED_NOGROUP, PRED_SAMEFILE, PRED_PERM, PRED_ACCESS,
 	PRED_TIME, PRED_PATH, PRED_LNAME, PRED_XTYPE, PRED_FSTYPE, PRED_REGEX,
+	PRED_CONTAINS, /* ferret extension: -contains/-icontains content search */
 	ACT_PRINT, ACT_PRINT0, ACT_EXEC, ACT_DELETE, ACT_QUIT, ACT_PRINTF, ACT_LS,
 };
 
@@ -96,6 +97,11 @@ struct expr {
 		} pf;
 		struct frt_regex *regex;  /* -regex/-iregex compiled pattern */
 		const char *fstype;       /* -fstype requested type name */
+		struct {                  /* -contains/-icontains: substring in content */
+			const char *needle;
+			size_t needle_len;
+			int icase;
+		} contains;
 	} u;
 };
 

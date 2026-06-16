@@ -38,4 +38,8 @@ bool pred_xtype(const struct expr *e, struct entry *ent, struct evalctx *ctx);  
 bool pred_fstype(const struct expr *e, struct entry *ent, struct evalctx *ctx); /* -fstype */
 bool pred_regex(const struct expr *e, struct entry *ent, struct evalctx *ctx);  /* -regex/-iregex */
 
+/* ferret extension: -contains/-icontains match a substring in the file content
+ * (regular files only). High cost — the optimizer runs it after cheap filters. */
+bool pred_contains(const struct expr *e, struct entry *ent, struct evalctx *ctx);
+
 #endif /* FRT_PRED_H */

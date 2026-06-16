@@ -196,6 +196,7 @@ static const char *pred_name_str(enum pred_id p)
 	case PRED_PATH: return "path"; case PRED_LNAME: return "lname";
 	case PRED_XTYPE: return "xtype"; case PRED_FSTYPE: return "fstype";
 	case PRED_REGEX: return "regex";
+	case PRED_CONTAINS: return "contains";
 	case ACT_PRINT: return "print"; case ACT_PRINT0: return "print0";
 	case ACT_EXEC: return "exec"; case ACT_DELETE: return "delete";
 	case ACT_QUIT: return "quit"; case ACT_PRINTF: return "printf"; case ACT_LS: return "ls";

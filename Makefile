@@ -36,6 +36,7 @@ LDLIBS  += $(LDLIBS_OPT)
 SRC = \
 	src/action.c \
 	src/arena.c \
+	src/content.c \
 	src/diag.c \
 	src/dstr.c \
 	src/entry.c \
