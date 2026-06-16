@@ -39,8 +39,10 @@ only normalized difference is the leading program-name token on stderr.
 
 The main saving is not calling `lstat` when `d_type` already answers the type, plus `getdents` with a
 64 KB buffer, arena allocation with inline names, cost-based predicate reordering, and batched
-`write(2)`. When a predicate needs metadata the stat calls are deferred and run on a worker pool or
-io_uring instead of one at a time. Numbers land as the surface fills in (sprint 02+).
+`write(2)`. By default metadata stats run inline — one `fstatat` per file, as a predicate needs it.
+An opt-in worker pool (`--ferret-threads N`) runs them in parallel for stat-heavy traversals, with
+identical output; an `io_uring` backend is planned but not yet implemented (`FRT_IO=uring` falls back
+to the pool). Numbers land as the surface fills in (sprint 02+).
 
 ## Layout
 

@@ -46,7 +46,8 @@ int frt_regextype_from_name(const char *name)
 static char *emacs_to_ere(const char *pat, int bre, struct arena *a)
 {
 	size_t n = strlen(pat);
-	char *out = arena_alloc(a, n * 2 + 1);
+	/* worst case is \W -> "[^[:alnum:]_]" (13 bytes for 2 input bytes). */
+	char *out = arena_alloc(a, n * 7 + 1);
 	char *w = out;
 	for (const char *p = pat; *p;) {
 		if (*p == '\\' && p[1]) {
@@ -65,6 +66,15 @@ static char *emacs_to_ere(const char *pat, int bre, struct arena *a)
 					*w++ = '\\';
 					*w++ = c;
 				}
+				p += 2;
+				continue;
+			}
+			if (c == 'w' || c == 'W') {
+				/* GNU word-char op -> POSIX class, so it compiles and
+				 * matches even where the system regex lacks \w (e.g. BSD). */
+				const char *cls = (c == 'w') ? "[[:alnum:]_]" : "[^[:alnum:]_]";
+				while (*cls)
+					*w++ = *cls++;
 				p += 2;
 				continue;
 			}
