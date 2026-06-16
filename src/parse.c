@@ -1478,9 +1478,47 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 		} else if (strcmp(a, "-H") == 0) {
 			out->opts.follow = 2;
 			i++;
-		} else if (a[0] == '-' && a[1] == 'O' && a[2] >= '0' && a[2] <= '9' &&
-			   a[3] == '\0') {
-			out->opts.optlevel = a[2] - '0';
+		} else if (a[0] == '-' && a[1] == 'O') {
+			/* find accepts any -O<decimal integer> (clamped internally) with
+			 * three distinct errors for the malformed forms. */
+			const char *tail = a + 2;
+			if (*tail == '\0') {
+				out->error = "The -O option must be immediately followed by a "
+					     "decimal integer";
+				return -1;
+			}
+			if (*tail < '0' || *tail > '9') {
+				out->error = "Please specify a decimal number immediately after -O";
+				return -1;
+			}
+			char *end;
+			errno = 0;
+			unsigned long lvl = strtoul(tail, &end, 10);
+			if (*end != '\0') {
+				char *m = arena_alloc(arena, strlen(tail) + 40);
+				snprintf(m, strlen(tail) + 40, "Invalid optimisation level %s", tail);
+				out->error = m;
+				return -1;
+			}
+			if (lvl == ULONG_MAX && errno == ERANGE) {
+				/* find passes errno to error(), appending ": <strerror>". */
+				char *m = arena_alloc(arena, strlen(tail) + 64);
+				snprintf(m, strlen(tail) + 64, "Invalid optimisation level %s: %s",
+					 tail, strerror(ERANGE));
+				out->error = m;
+				return -1;
+			}
+			if (lvl > USHRT_MAX) {
+				char *m = arena_alloc(arena, 128);
+				snprintf(m, 128, "Optimisation level %lu is too high.  If you "
+					 "want to find files very quickly, consider using GNU "
+					 "locate.", lvl);
+				out->error = m;
+				return -1;
+			}
+			if (lvl > 4) /* clamp to the implemented max; output is -O-invariant */
+				lvl = 4;
+			out->opts.optlevel = (int)lvl;
 			i++;
 		} else if (strcmp(a, "--ferret-threads") == 0 && i + 1 < argc) {
 			/* ferret extension (kept out of --help): worker count for the
