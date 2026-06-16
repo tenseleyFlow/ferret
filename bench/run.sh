@@ -40,7 +40,13 @@ bench_one() {
 	hyperfine -w 5 -r 30 --export-csv "$_csv" \
 		"$FERRET $* >/dev/null" "$ref $* >/dev/null" >/dev/null 2>&1 || {
 		echo "bench: hyperfine failed for $_lbl"; rc=1; return; }
-	# below ~10ms use the min metric (noise-robust); else mean.
+	# FRT_PERF_METRIC forces the metric (CI sets min: shared runners jitter the
+	# mean upward, but the best-of-30 min reflects true compute). Default: below
+	# ~10ms use min (noise-robust), else mean.
+	if [ -n "${FRT_PERF_METRIC:-}" ]; then
+		sh bench/gate.sh "$_csv" "$FRT_PERF_METRIC" "$_lbl" || rc=1
+		return
+	fi
 	tmean=$(awk -F, 'NR>1 { split($1,w," "); n=split(w[1],q,"/"); b=q[n];
 		if (b=="find" || b ~ /^find-/) {print $2; exit} }' "$_csv")
 	if awk -v t="$tmean" 'BEGIN { exit !(t + 0 < 0.010) }'; then

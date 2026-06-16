@@ -54,11 +54,12 @@ jobs:
       - name: sanitizer build
         run: make debug
       - name: bench
-        # Shared CI runners are noisy; on the cheapest shape (wide_type, a -type
-        # scan bottlenecked on per-dir syscalls both tools share) ferret ties find
-        # within a few percent. Allow a 3% noise band so a coin-flip tie doesn't
-        # red the build — real regressions are tens of percent and still fail.
-        run: FRT_PERF_MARGIN=0.97 make bench
+        # Shared CI runners jitter the mean upward, especially on the many-tiny-dir
+        # "wide" shapes that are per-dir-syscall-bound (ferret's getdents/buffer edge
+        # is smallest there). Gate on the best-of-30 min (true compute, jitter-robust)
+        # with a 3% band. Substantive shapes clear it by 25-85%; real regressions
+        # (tens of %) still fail. Local 'make bench' keeps the strict auto metric.
+        run: FRT_PERF_METRIC=min FRT_PERF_MARGIN=0.97 make bench
       - name: io_uring vs pool bench (linux, informational)
         if: runner.os == 'Linux'
         run: sh bench/uring.sh || true
