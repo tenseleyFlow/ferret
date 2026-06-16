@@ -166,29 +166,6 @@ static void epoch_ns(time_t sec, long nsec, char *out, size_t n)
 	snprintf(out, n, "%lld.%09ld0", (long long)sec, nsec);
 }
 
-/* %h: leading directories of a path (find's algorithm), "." if none. */
-static void dirname_of(const char *path, char *out, size_t n)
-{
-	size_t l = strlen(path);
-	while (l > 1 && path[l - 1] == '/')
-		l--;
-	size_t slash = (size_t)-1;
-	for (size_t k = 0; k < l; k++)
-		if (path[k] == '/')
-			slash = k;
-	if (slash == (size_t)-1) {
-		snprintf(out, n, ".");
-	} else {
-		size_t end = slash;
-		if (end == 0)
-			end = 1; /* root "/" */
-		if (end >= n)
-			end = n - 1;
-		memcpy(out, path, end);
-		out[end] = '\0';
-	}
-}
-
 /* ---- compiler -------------------------------------------------------------- */
 
 static enum arg_type dir_argtype(char c)
@@ -466,13 +443,54 @@ static void render_dir(const struct segment *s, struct entry *ent, struct evalct
 	case 'p':
 		emit_spec_str(out, s->spec, ent->path);
 		return;
-	case 'f':
-		emit_spec_str(out, s->spec, ent->name);
+	case 'f': {
+		/* find's %f is gnulib base_name(path): the last component, keeping any
+		 * trailing slashes ("corpus/" -> "corpus/"); "/" for an all-slash path.
+		 * It's a suffix of ent->path (NUL-terminated), so no copy is needed —
+		 * and ent->name is wrong here since it has trailing slashes stripped. */
+		const char *path = ent->path;
+		size_t len = ent->pathlen, i = 0;
+		while (i < len && path[i] == '/')
+			i++;
+		if (i == len) {
+			emit_spec_str(out, s->spec, "/");
+		} else {
+			size_t base = i;
+			int saw = 0;
+			for (size_t k = i; k < len; k++) {
+				if (path[k] == '/')
+					saw = 1;
+				else if (saw) {
+					base = k;
+					saw = 0;
+				}
+			}
+			emit_spec_str(out, s->spec, path + base);
+		}
 		return;
+	}
 	case 'h': {
-		char d[1024];
-		dirname_of(ent->path, d, sizeof d);
-		emit_spec_str(out, s->spec, d);
+		/* find's %h: strip trailing slashes (keep the root slash), then keep
+		 * everything before the last '/'; "." if there is none. Length-aware
+		 * (a long leading-directory string must not be truncated). */
+		const char *path = ent->path;
+		size_t len = ent->pathlen, e = len;
+		while (e > 0 && path[e - 1] == '/')
+			e--;
+		size_t work = (e == 0) ? len : e; /* all-slashes: keep the slash */
+		size_t slash = (size_t)-1;
+		for (size_t k = 0; k < work; k++)
+			if (path[k] == '/')
+				slash = k;
+		if (slash == (size_t)-1) {
+			emit_spec_str(out, s->spec, ".");
+		} else {
+			char *d = frt_xmalloc(slash + 1);
+			memcpy(d, path, slash);
+			d[slash] = '\0';
+			emit_spec_str(out, s->spec, d);
+			free(d);
+		}
 		return;
 	}
 	case 'P': {
