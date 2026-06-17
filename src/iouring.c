@@ -121,20 +121,34 @@ void frt_iouring_statx_batch(struct frt_iouring *r, int dirfd, struct entry **en
 			if (w < 0)
 				break;
 			size_t j = (size_t)(uintptr_t)io_uring_cqe_get_data(cqe);
-			size_t k = base + j;
-			struct entry *ent = ents[surv[k]];
-			if (cqe->res == 0) {
-				statx_to_statinfo(&r->bufs[j], &slots[k]);
-				apply(ent, &slots[k], follow);
-			} else {
-				ent->flags |= ENT_STAT_FAILED;
-				ent->stat_errno = -cqe->res;
+			if (j < prepped) { /* defensive: ignore any CQE outside this chunk */
+				size_t k = base + j;
+				struct entry *ent = ents[surv[k]];
+				if (cqe->res == 0) {
+					statx_to_statinfo(&r->bufs[j], &slots[k]);
+					apply(ent, &slots[k], follow);
+				} else {
+					ent->flags |= ENT_STAT_FAILED;
+					ent->stat_errno = -cqe->res;
+				}
 			}
 			io_uring_cqe_seen(&r->ring, cqe);
 		}
-		base += done;
-		if (done < prepped)
-			break; /* didn't fully drain this chunk; lazy-stat the remainder */
+		/* If we bailed early (wait failure), drain the still-in-flight completions
+		 * so a stale CQE can't bleed into the next directory's batch and be applied
+		 * to the wrong entry. Discarded entries aren't marked STATTED, so eval_expr
+		 * lazy-stats them via fstatat — output stays correct, ring stays clean. */
+		while (done < want) {
+			struct io_uring_cqe *cqe;
+			int w;
+			while ((w = io_uring_wait_cqe(&r->ring, &cqe)) == -EINTR)
+				;
+			if (w < 0)
+				break;
+			io_uring_cqe_seen(&r->ring, cqe);
+			done++;
+		}
+		base += prepped;
 	}
 }
 
