@@ -11,9 +11,11 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
 struct ancestor {
@@ -41,6 +43,8 @@ struct walkenv {
 	int needs_stat;    /* expression can trigger a stat (gates the backend) */
 	const struct expr *guard[FRT_GUARD_MAX]; /* stat-free necessary conditions */
 	int nguard;        /* count of guard conjuncts (0 = no pre-filter) */
+	int fd_cap;        /* max simultaneously-open dir fds (INT_MAX = no eviction) */
+	int nopen;         /* dir fds currently open in the frame stack */
 };
 
 /* Don't dispatch to the pool for a survivor batch smaller than this — waking
@@ -187,8 +191,14 @@ static int open_start_parent(struct arena *a, const char *root)
  * pre/post-order (-depth), -prune, -quit, -xdev, -maxdepth/-mindepth, -L loop
  * detection, -execdir per-directory batch flushing, and the collect-then-release
  * arena discipline are all preserved. */
+/* Open dir fds are bounded by walkenv.fd_cap (derived from RLIMIT_NOFILE in
+ * frt_walk); deeper ancestors are closed and reopened by path when the walk
+ * unwinds to them, so a very deep tree does not exhaust the fd table. Eviction
+ * is disabled when the expression uses -execdir (its '+' batches cache a dir fd
+ * across descent — see frt_walk). */
 struct dirframe {
-	int dirfd;                 /* this directory's fd (fd-relative stat/descent) */
+	int dirfd;                 /* this directory's fd, or -1 if evicted */
+	char *dir_path;            /* this directory's path, to reopen after eviction */
 	struct entry **ents;       /* collected entries (heap; freed on finalize) */
 	size_t n, idx;             /* entry count, next to process */
 	int depth;
@@ -219,6 +229,56 @@ static void stat_worker(void *arg, size_t k)
 	struct statjob *j = arg;
 	uint32_t i = j->surv[k];
 	frt_entry_fill_stat(j->ents[i], j->dirfd, j->ents[i]->name, j->follow, &j->slots[k]);
+}
+
+/* True if the expression runs -execdir (a '+' batch caches a directory fd and
+ * flushes it across descent, so its frame must not be fd-evicted). */
+static int expr_has_execdir(const struct expr *e)
+{
+	if (!e)
+		return 0;
+	if (e->kind == EXPR_LEAF)
+		return e->pred == ACT_EXEC && e->u.exec.execdir;
+	return expr_has_execdir(e->lhs) || expr_has_execdir(e->rhs);
+}
+
+/* Close the shallowest still-open directory fd other than frames[keep] to stay
+ * within the fd budget; its directory is reopened by path if the walk returns. */
+static void frames_evict(struct walkenv *we, struct dirframe *frames, size_t nf, size_t keep)
+{
+	while (we->nopen > we->fd_cap) {
+		size_t e = nf;
+		for (size_t k = 0; k < nf; k++)
+			if (k != keep && frames[k].dirfd >= 0) {
+				e = k;
+				break;
+			}
+		if (e == nf)
+			break; /* nothing else to close */
+		close(frames[e].dirfd);
+		frames[e].dirfd = -1;
+		we->nopen--;
+	}
+}
+
+/* Ensure frames[i] has an open fd, reopening its directory by path if it was
+ * evicted (then trimming the open set). Returns the fd, or -1 if the reopen
+ * failed (the directory vanished/changed under a race). `report` controls the
+ * diagnostic so a reopen-then-finalize can't report the same race twice. */
+static int frame_fd(struct walkenv *we, struct dirframe *frames, size_t nf, size_t i, int report)
+{
+	if (frames[i].dirfd >= 0)
+		return frames[i].dirfd;
+	int fd = open(frames[i].dir_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd < 0) {
+		if (report)
+			report_error(we, frames[i].dir_path, errno);
+		return -1;
+	}
+	frames[i].dirfd = fd;
+	we->nopen++;
+	frames_evict(we, frames, nf, i);
+	return fd;
 }
 
 /* Run the parallel stat backend (pool or io_uring) over a directory's entries,
@@ -301,6 +361,7 @@ static int frame_open(struct walkenv *we, struct frt_dir *d, int depth, int anc_
 		report_error(we, we->path.data, read_err);
 
 	run_stat_batch(we, ents, n, dirfd);
+	we->nopen++;
 
 	if (*nf == *cap) {
 		*cap = *cap ? *cap * 2 : 64;
@@ -308,6 +369,7 @@ static int frame_open(struct walkenv *we, struct frt_dir *d, int depth, int anc_
 	}
 	struct dirframe *f = &(*frames)[(*nf)++];
 	f->dirfd = dirfd;
+	f->dir_path = frt_strdup(we->path.data);
 	f->ents = ents;
 	f->n = n;
 	f->idx = 0;
@@ -317,16 +379,28 @@ static int frame_open(struct walkenv *we, struct frt_dir *d, int depth, int anc_
 	f->anc_pushed = anc_pushed;
 	f->mark = mark;
 	f->awaiting = 0;
+	/* keep this newly-opened dir; close a shallower one if over budget */
+	frames_evict(we, *frames, *nf, *nf - 1);
 	return 1;
 }
 
 /* Flush this directory's -execdir '+' batch, close its fd, drop its -L ancestor,
- * restore the path to the directory level, and reclaim its arena allocations. */
-static void frame_finalize(struct walkenv *we, struct dirframe *f)
+ * restore the path to the directory level, and reclaim its arena allocations.
+ * `i` is the frame's index (always the top); its fd is reopened if it was
+ * evicted, so the -execdir flush runs in the right directory. */
+static void frame_finalize(struct walkenv *we, struct dirframe *frames, size_t nf, size_t i)
 {
-	we->ctx.dirfd = f->dirfd;
-	frt_exec_flush_tree(we->expr, 1, f->my_id, &we->ctx);
-	close(f->dirfd);
+	struct dirframe *f = &frames[i];
+	int fd = frame_fd(we, frames, nf, i, 0); /* reopen if evicted (for the flush) */
+	we->ctx.dirfd = fd;
+	if (fd >= 0)
+		frt_exec_flush_tree(we->expr, 1, f->my_id, &we->ctx);
+	if (f->dirfd >= 0) {
+		close(f->dirfd);
+		f->dirfd = -1;
+		we->nopen--;
+	}
+	free(f->dir_path);
 	free(f->ents);
 	if (f->anc_pushed)
 		anc_pop(we);
@@ -359,8 +433,15 @@ static void walk_tree(struct walkenv *we, struct frt_dir *d, int depth)
 	while (nf > 0) {
 		struct dirframe *f = &frames[nf - 1];
 		if (f->idx >= f->n) { /* directory exhausted */
-			frame_finalize(we, f);
+			frame_finalize(we, frames, nf, nf - 1);
 			nf--;
+			continue;
+		}
+		/* Only the top frame's fd is used; reopen it if it was evicted while a
+		 * deeper subtree ran. If the directory vanished (race), report and skip
+		 * its remaining entries. */
+		if (frame_fd(we, frames, nf, nf - 1, 1) < 0) {
+			f->idx = f->n;
 			continue;
 		}
 		struct entry *ent = f->ents[f->idx];
@@ -473,7 +554,7 @@ static void walk_tree(struct walkenv *we, struct frt_dir *d, int depth)
 	/* On -quit, finalize the remaining frames LIFO — flushing each directory's
 	 * -execdir batch and closing its fd — exactly as the recursive unwind did. */
 	while (nf > 0) {
-		frame_finalize(we, &frames[nf - 1]);
+		frame_finalize(we, frames, nf, nf - 1);
 		nf--;
 	}
 	free(frames);
@@ -498,6 +579,24 @@ int frt_walk(const char *root, const struct options *opts, const struct expr *ex
 	we.nguard = ((pool || uring) && needs_stat)
 			    ? frt_expr_collect_guard(expr, we.guard, FRT_GUARD_MAX)
 			    : 0;
+	/* Bound open dir fds so deep trees don't hit RLIMIT_NOFILE. The cap tracks the
+	 * actual fd limit (less a margin for std streams, pipes, and -f* files), so
+	 * eviction only engages near the limit — normal/shallow trees keep every fd
+	 * open and pay no reopen cost. -execdir '+' caches a dir fd across descent, so
+	 * its fds stay pinned (no eviction). Reopen is by path, so a tree deeper than
+	 * PATH_MAX under a tight fd budget still can't be fully walked (see deviations). */
+	if (expr_has_execdir(expr)) {
+		we.fd_cap = INT_MAX;
+	} else {
+		struct rlimit rl;
+		long cap = 4096; /* unknown/unlimited: keep plenty open, recycle only absurd depths */
+		if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY)
+			cap = (long)rl.rlim_cur - 24;
+		if (cap < 16)
+			cap = 16;
+		we.fd_cap = cap > INT_MAX ? INT_MAX : (int)cap;
+	}
+	we.nopen = 0;
 
 	we.ctx.follow = opts->follow;
 	we.ctx.dir_id = 0;
