@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 struct ancestor {
@@ -208,6 +209,8 @@ struct dirframe {
 	struct arena_marker mark;  /* rewind point for this dir's allocations */
 	struct arena_marker emark; /* rewind point for the in-flight entry's scratch */
 	int awaiting;              /* resumed after descending into ents[idx]? */
+	dev_t dev;                 /* identity at first open; a reopen that resolves */
+	ino_t ino;                 /* elsewhere (symlink swap) is refused (ino 0 = unknown) */
 };
 
 static void walk_tree(struct walkenv *we, struct frt_dir *d, int depth);
@@ -231,15 +234,39 @@ static void stat_worker(void *arg, size_t k)
 	frt_entry_fill_stat(j->ents[i], j->dirfd, j->ents[i]->name, j->follow, &j->slots[k]);
 }
 
-/* True if the expression runs -execdir (a '+' batch caches a directory fd and
- * flushes it across descent, so its frame must not be fd-evicted). */
-static int expr_has_execdir(const struct expr *e)
+/* True if the expression runs `-execdir ... +`: a '+' batch caches the directory
+ * fd (exec.c: b->dirfd = ctx->dirfd) and flushes it across descent, so its frame
+ * must not be fd-evicted. `-execdir ... ;` runs in the live ctx->dirfd at eval
+ * time and caches nothing, so it tolerates eviction like any other predicate. */
+static int expr_has_batched_execdir(const struct expr *e)
 {
 	if (!e)
 		return 0;
 	if (e->kind == EXPR_LEAF)
-		return e->pred == ACT_EXEC && e->u.exec.execdir;
-	return expr_has_execdir(e->lhs) || expr_has_execdir(e->rhs);
+		return e->pred == ACT_EXEC && e->u.exec.execdir && e->u.exec.multiple;
+	return expr_has_batched_execdir(e->lhs) || expr_has_batched_execdir(e->rhs);
+}
+
+/* Count -fprint/-fprint0/-fprintf/-fls output files in the expression. Each holds
+ * an fd open for the whole run (outfile.c), so they must be debited from the dir
+ * fd budget or a deep tree plus many -f* targets EMFILEs. Over-counts shared
+ * destinations (sharefile dedups them to one fd), which only tightens the cap. */
+static int expr_count_outfiles(const struct expr *e)
+{
+	if (!e)
+		return 0;
+	if (e->kind == EXPR_LEAF) {
+		switch (e->pred) {
+		case ACT_PRINT:
+		case ACT_PRINT0:
+		case ACT_PRINTF:
+		case ACT_LS:
+			return e->u.pf.dest != NULL;
+		default:
+			return 0;
+		}
+	}
+	return expr_count_outfiles(e->lhs) + expr_count_outfiles(e->rhs);
 }
 
 /* Close the shallowest still-open directory fd other than frames[keep] to stay
@@ -264,7 +291,14 @@ static void frames_evict(struct walkenv *we, struct dirframe *frames, size_t nf,
 /* Ensure frames[i] has an open fd, reopening its directory by path if it was
  * evicted (then trimming the open set). Returns the fd, or -1 if the reopen
  * failed (the directory vanished/changed under a race). `report` controls the
- * diagnostic so a reopen-then-finalize can't report the same race twice. */
+ * diagnostic so a reopen-then-finalize can't report the same race twice.
+ *
+ * Reopen is by absolute path, so a component swapped to a symlink mid-walk could
+ * redirect us out of the tree (a TOCTOU the fd-relative descent is immune to).
+ * We re-verify the reopened directory's (dev,ino) against the snapshot taken at
+ * first open; if it resolves elsewhere, refuse it (treat as a vanished dir).
+ * O_NOFOLLOW is deliberately NOT used — it would break a legitimately
+ * symlinked start path — the identity check is the actual guard. */
 static int frame_fd(struct walkenv *we, struct dirframe *frames, size_t nf, size_t i, int report)
 {
 	if (frames[i].dirfd >= 0)
@@ -274,6 +308,15 @@ static int frame_fd(struct walkenv *we, struct dirframe *frames, size_t nf, size
 		if (report)
 			report_error(we, frames[i].dir_path, errno);
 		return -1;
+	}
+	if (frames[i].ino != 0) { /* verify it's still the same directory */
+		struct stat st;
+		if (fstat(fd, &st) != 0 || st.st_dev != frames[i].dev || st.st_ino != frames[i].ino) {
+			close(fd);
+			if (report)
+				report_error(we, frames[i].dir_path, ENOTDIR);
+			return -1;
+		}
 	}
 	frames[i].dirfd = fd;
 	we->nopen++;
@@ -379,6 +422,14 @@ static int frame_open(struct walkenv *we, struct frt_dir *d, int depth, int anc_
 	f->anc_pushed = anc_pushed;
 	f->mark = mark;
 	f->awaiting = 0;
+	struct stat dst; /* identity snapshot to detect a reopen-by-path swap */
+	if (fstat(dirfd, &dst) == 0) {
+		f->dev = dst.st_dev;
+		f->ino = dst.st_ino;
+	} else {
+		f->dev = 0;
+		f->ino = 0; /* can't verify on reopen; skip the check */
+	}
 	/* keep this newly-opened dir; close a shallower one if over budget */
 	frames_evict(we, *frames, *nf, *nf - 1);
 	return 1;
@@ -438,10 +489,25 @@ static void walk_tree(struct walkenv *we, struct frt_dir *d, int depth)
 			continue;
 		}
 		/* Only the top frame's fd is used; reopen it if it was evicted while a
-		 * deeper subtree ran. If the directory vanished (race), report and skip
-		 * its remaining entries. */
+		 * deeper subtree ran. If the directory vanished/was-revoked under a race,
+		 * report and skip its remaining entries — but if we were resuming after a
+		 * child subtree, still run that entry's deferred post-order eval first
+		 * (with no dir fd: -print etc. need none; fd-bound actions fail visibly
+		 * rather than the whole subtree silently vanishing). */
 		if (frame_fd(we, frames, nf, nf - 1, 1) < 0) {
+			if (f->awaiting && o->depth_first && f->depth >= o->mindepth) {
+				struct entry *de = f->ents[f->idx];
+				de->path = we->path.data;
+				we->ctx.dirfd = -1;
+				we->ctx.dir_id = f->my_id;
+				we->ctx.statname = de->name;
+				we->ctx.prune = false;
+				(void)eval_expr(we->expr, de, &we->ctx);
+			}
 			f->idx = f->n;
+			f->awaiting = 0;
+			if (we->ctx.quit)
+				break;
 			continue;
 		}
 		struct entry *ent = f->ents[f->idx];
@@ -580,20 +646,24 @@ int frt_walk(const char *root, const struct options *opts, const struct expr *ex
 			    ? frt_expr_collect_guard(expr, we.guard, FRT_GUARD_MAX)
 			    : 0;
 	/* Bound open dir fds so deep trees don't hit RLIMIT_NOFILE. The cap tracks the
-	 * actual fd limit (less a margin for std streams, pipes, and -f* files), so
-	 * eviction only engages near the limit — normal/shallow trees keep every fd
-	 * open and pay no reopen cost. -execdir '+' caches a dir fd across descent, so
-	 * its fds stay pinned (no eviction). Reopen is by path, so a tree deeper than
-	 * PATH_MAX under a tight fd budget still can't be fully walked (see deviations). */
-	if (expr_has_execdir(expr)) {
-		we.fd_cap = INT_MAX;
+	 * actual fd limit, less a reserve for std streams / the stdout pipe / a
+	 * transient child-open during descent / an io_uring ring / a -contains open,
+	 * less one fd per -f* output file (held open the whole run). Eviction only
+	 * engages near the limit — normal/shallow trees keep every fd open and pay no
+	 * reopen cost. The cap must stay strictly below the usable budget: an earlier
+	 * `floor at 16` raised it ABOVE the budget at a tight RLIMIT_NOFILE, so the
+	 * walk EMFILE'd before eviction ever fired. Reopen is by path, so a tree
+	 * deeper than PATH_MAX under a tight budget still can't be fully walked, and
+	 * `-execdir +` pins one dir fd across descent (see deviations). */
+	if (expr_has_batched_execdir(expr)) {
+		we.fd_cap = INT_MAX; /* '+' batch caches a dir fd; eviction would dangle it */
 	} else {
 		struct rlimit rl;
 		long cap = 4096; /* unknown/unlimited: keep plenty open, recycle only absurd depths */
 		if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY)
-			cap = (long)rl.rlim_cur - 24;
-		if (cap < 16)
-			cap = 16;
+			cap = (long)rl.rlim_cur - 24 - expr_count_outfiles(expr);
+		if (cap < 1)
+			cap = 1; /* a tiny budget still walks (heavy reopen), never over-floors */
 		we.fd_cap = cap > INT_MAX ? INT_MAX : (int)cap;
 	}
 	we.nopen = 0;
