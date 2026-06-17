@@ -226,7 +226,7 @@ static int parse_nonneg(const char *s)
 		if (*p < '0' || *p > '9')
 			return -1;
 		v = v * 10 + (*p - '0');
-		if (v > 1000000000)
+		if (v > INT_MAX) /* find accepts -maxdepth up to INT_MAX, rejects beyond */
 			return -1;
 	}
 	return (int)v;
