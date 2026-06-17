@@ -247,9 +247,15 @@ static int parse_num_arg(const char *s, int *kind, unsigned long long *val)
 		*kind = COMP_LT;
 		s++;
 	}
-	/* find parses the magnitude with xstrtoumax, which (via strtoumax) skips
-	 * leading whitespace and takes an optional sign. strtoull matches that;
-	 * reject empty, trailing junk, and overflow. */
+	/* find's xstrtoumax rejects a negative magnitude, so `-uid +-5` is non-numeric
+	 * (but `-uid -+5` is fine: '-' is the comparison, '+5' the magnitude). strtoull
+	 * would wrap the '-5', so reject a leading '-' after the optional whitespace it
+	 * (and xstrtoumax) skip. A leading '+' on the magnitude stays valid. */
+	const char *m = s;
+	while (isspace((unsigned char)*m))
+		m++;
+	if (*m == '-')
+		return -1;
 	errno = 0;
 	char *end;
 	unsigned long long v = strtoull(s, &end, 10);

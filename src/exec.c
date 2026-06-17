@@ -174,9 +174,13 @@ static int run_argv(char **argv, int execdir, int dirfd, int close_stdin, struct
 	/* A signal-killed child gets a diagnostic (matching find), but — like find —
 	 * neither a signal nor a non-zero exit changes ferret's own exit status; the
 	 * predicate just evaluates false. Only ferret's own errors set exit 1. */
-	if (WIFSIGNALED(status))
-		fprintf(stderr, "ferret: '%s' terminated by signal %d\n", argv[0],
+	if (WIFSIGNALED(status)) {
+		/* find quotes the command with locale quotes (‘…’ under UTF-8, '…' under C). */
+		const char *oq = frt_diag_utf8() ? "\xe2\x80\x98" : "'";
+		const char *cq = frt_diag_utf8() ? "\xe2\x80\x99" : "'";
+		fprintf(stderr, "ferret: %s%s%s terminated by signal %d\n", oq, argv[0], cq,
 			WTERMSIG(status));
+	}
 	return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
