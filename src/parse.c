@@ -309,6 +309,8 @@ static int parse_size_arg(const char *s, int *kind, unsigned long long *val, lon
 	}
 	while (p < pend && isspace((unsigned char)*p)) /* xstrtoumax skips leading ws */
 		p++;
+	if (p < pend && *p == '+') /* then accepts one leading '+' on the magnitude */
+		p++;
 	if (p == pend)
 		return -1; /* nothing but a sign/whitespace */
 	unsigned long long v = 0;
@@ -1704,6 +1706,9 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 				exit(EXIT_SUCCESS);
 			}
 			i += 2;
+		} else if (strcmp(a, "--") == 0) {
+			i++; /* end of options (POSIX); paths/expression follow */
+			break;
 		} else {
 			break;
 		}

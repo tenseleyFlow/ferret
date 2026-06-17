@@ -37,6 +37,16 @@ int main(void)
 	/* posix-basic GNU BRE: \| alternation */
 	CHECK("basic alt", m(&a, ".*\\.\\(c\\|h\\)", FRT_RE_POSIX_BASIC, 0, "x.c") == 1);
 
+	/* emacs/BRE: a repetition op with nothing to repeat is literal, not an error
+	 * (leading, or after ( or |) — must compile and match, like GNU find. */
+	CHECK("emacs leading + literal", m(&a, "+file", FRT_RE_EMACS, 0, "+file") == 1);
+	CHECK("emacs + after | literal", m(&a, "a\\|+b", FRT_RE_EMACS, 0, "+b") == 1);
+	CHECK("emacs leading * literal", m(&a, "*x", FRT_RE_EMACS, 0, "*x") == 1);
+	CHECK("emacs ? after ( literal", m(&a, "\\(?a\\)", FRT_RE_EMACS, 0, "?a") == 1);
+	CHECK("emacs real + still operates", m(&a, "ab+", FRT_RE_EMACS, 0, "abbb") == 1);
+	CHECK("emacs real + no-match", m(&a, "ab+", FRT_RE_EMACS, 0, "a") == 0);
+	CHECK("bracket with + literal", m(&a, "[+]x", FRT_RE_EMACS, 0, "+x") == 1);
+
 	/* regextype name mapping */
 	CHECK("name emacs", frt_regextype_from_name("emacs") == FRT_RE_EMACS);
 	CHECK("name egrep", frt_regextype_from_name("posix-egrep") == FRT_RE_POSIX_EGREP);

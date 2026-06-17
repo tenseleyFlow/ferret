@@ -49,11 +49,17 @@ static char *emacs_to_ere(const char *pat, int bre, struct arena *a)
 	/* worst case is \W -> "[^[:alnum:]_]" (13 bytes for 2 input bytes). */
 	char *out = arena_alloc(a, n * 7 + 1);
 	char *w = out;
+	/* prev_atom: is the preceding token something a *, +, or ? can repeat? When
+	 * not, those are literal in emacs/GNU regex (e.g. a leading "+file" or after
+	 * "(" / "|"), but a syntax error in POSIX ERE — so escape them. Reset at the
+	 * start and after ( | ^. */
+	int prev_atom = 0;
 	for (const char *p = pat; *p;) {
 		if (*p == '\\' && p[1]) {
 			char c = p[1];
 			if (c == '(' || c == ')' || c == '|') {
 				*w++ = c; /* \( -> ( etc. (now special in ERE) */
+				prev_atom = (c == ')');
 				p += 2;
 				continue;
 			}
@@ -66,6 +72,7 @@ static char *emacs_to_ere(const char *pat, int bre, struct arena *a)
 					*w++ = '\\';
 					*w++ = c;
 				}
+				prev_atom = 1;
 				p += 2;
 				continue;
 			}
@@ -75,30 +82,81 @@ static char *emacs_to_ere(const char *pat, int bre, struct arena *a)
 				const char *cls = (c == 'w') ? "[[:alnum:]_]" : "[^[:alnum:]_]";
 				while (*cls)
 					*w++ = *cls++;
+				prev_atom = 1;
 				p += 2;
 				continue;
 			}
 			if (bre && (c == '+' || c == '?')) {
 				*w++ = c; /* GNU BRE \+ -> ERE + (operator) */
+				prev_atom = 1;
 				p += 2;
 				continue;
 			}
 			*w++ = '\\'; /* keep other escapes verbatim (\. \\ \w ...) */
 			*w++ = c;
+			prev_atom = 1;
 			p += 2;
+			continue;
+		}
+		if (*p == '[') {
+			/* Copy a bracket expression verbatim; its contents are literal, so
+			 * the operator logic below must not see them. Handle a leading ^, a
+			 * literal ] in the first position, and [:class:]/[.coll.]/[=eq=]
+			 * elements (whose inner ] does not close the bracket). */
+			*w++ = *p++;
+			if (*p == '^')
+				*w++ = *p++;
+			if (*p == ']')
+				*w++ = *p++;
+			while (*p && *p != ']') {
+				if (*p == '[' && (p[1] == ':' || p[1] == '.' || p[1] == '=')) {
+					char kind = p[1];
+					*w++ = *p++; /* [ */
+					*w++ = *p++; /* : . or = */
+					while (*p && !(*p == kind && p[1] == ']'))
+						*w++ = *p++;
+					if (*p) {
+						*w++ = *p++; /* : . or = */
+						*w++ = *p++; /* ] */
+					}
+				} else {
+					*w++ = *p++;
+				}
+			}
+			if (*p == ']')
+				*w++ = *p++;
+			prev_atom = 1;
 			continue;
 		}
 		if (*p == '(' || *p == ')' || *p == '{' || *p == '}' || *p == '|') {
 			*w++ = '\\'; /* bare ( -> \( (literal in ERE) */
 			*w++ = *p++;
+			prev_atom = 1;
 			continue;
 		}
 		if (bre && (*p == '+' || *p == '?')) {
 			*w++ = '\\'; /* GNU BRE bare + -> ERE \+ (literal) */
 			*w++ = *p++;
+			prev_atom = 1;
 			continue;
 		}
+		if ((*p == '*' || *p == '+' || *p == '?') && !prev_atom) {
+			/* repetition operator with nothing to repeat -> literal (emacs/find);
+			 * ERE would reject it. */
+			*w++ = '\\';
+			*w++ = *p++;
+			prev_atom = 1;
+			continue;
+		}
+		if (*p == '^') {
+			*w++ = *p++;
+			prev_atom = 0; /* an atom does not precede a following operator */
+			continue;
+		}
+		/* a *, +, or ? here is a real operator (prev_atom set); everything else is
+		 * an ordinary atom. Either way an atom precedes the next token. */
 		*w++ = *p++;
+		prev_atom = 1;
 	}
 	*w = '\0';
 	return out;
