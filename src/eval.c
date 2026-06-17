@@ -38,9 +38,17 @@ void frt_entry_fill_stat(struct entry *ent, int dirfd, const char *statname, int
 			 struct frt_statinfo *slot)
 {
 	if (frt_stat_at(dirfd, statname, follow, slot) < 0) {
-		ent->flags |= ENT_STAT_FAILED;
-		ent->stat_errno = errno;
-		return;
+		int e = errno; /* capture before the fallback lstat clobbers errno */
+		/* Under -L/-H a dangling symlink (target ENOENT) falls back to the link's
+		 * own lstat, so its metadata (size, times, -type l) is populated like find
+		 * — not left blank. Mirrors the start-path fallback in frt_walk. */
+		if (follow && e == ENOENT && frt_stat_at(dirfd, statname, 0, slot) == 0) {
+			follow = 0; /* classified as the link itself now */
+		} else {
+			ent->flags |= ENT_STAT_FAILED;
+			ent->stat_errno = e;
+			return;
+		}
 	}
 	ent->st = slot;
 	ent->flags |= ENT_STATTED;
