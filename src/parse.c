@@ -759,6 +759,9 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->eval = pred_xtype;
 		e->u.type.mask = mask;
 		e->needs_stat = true;
+		/* impure: a broken/inaccessible target prints a diagnostic and sets the
+		 * exit status (pred_xtype), so reordering would change stderr/exit. */
+		e->pure = false;
 		e->cost = COST_STAT;
 		e->prob = 0.5f;
 		return e;
@@ -815,6 +818,9 @@ static struct expr *parse_predicate(struct pstate *ps)
 		e->u.contains.needle_len = strlen(arg);
 		e->u.contains.icase = (name[1] == 'i');
 		e->needs_stat = true;        /* regular-file check + opens the file */
+		/* impure: an unreadable file prints a diagnostic and sets the exit status
+		 * (pred_contains), so it must not be reordered relative to other tests. */
+		e->pure = false;
 		e->cost = 50.0f * COST_STAT; /* reads content: runs after every cheap test */
 		e->prob = 0.5f;
 		return e;
