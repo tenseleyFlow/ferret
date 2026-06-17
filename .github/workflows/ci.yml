@@ -28,6 +28,19 @@ jobs:
         run: ./configure && make CFLAGS="-O2 -Werror"
       - name: test
         run: make test
+      - name: deep-tree walk (iterative + fd recycling)
+        run: |
+          d=$(mktemp -d)
+          ( cd "$d" && for i in $(seq 1 1500); do mkdir x && cd x || break; echo f > leaf; done )
+          ref=tests/.work/ref/find-4.10.0
+          # iterative walk: a deep tree must not SIGSEGV even on a small stack
+          ( ulimit -s 256; ./ferret "$d" >/dev/null 2>&1 ) || { echo "FAIL: deep tree crashed under ulimit -s 256"; rm -rf "$d"; exit 1; }
+          # fd recycling: must not EMFILE under a low fd limit, and match find exactly
+          fc=$( ulimit -n 128; ./ferret "$d" -type d | wc -l | tr -d ' ' )
+          gc=$( "$ref" "$d" -type d | wc -l | tr -d ' ' )
+          rm -rf "$d"
+          [ "$fc" = "$gc" ] || { echo "FAIL: deep-tree dir count ferret=$fc != find=$gc"; exit 1; }
+          echo "deep-tree walk OK ($gc dirs, stack+fd bounded)"
       - name: io_uring parity (linux)
         if: runner.os == 'Linux'
         run: |
