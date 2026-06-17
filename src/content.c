@@ -52,7 +52,9 @@ int frt_file_contains(int dirfd, const char *name, const char *needle,
 		      size_t nlen, int icase, int *errp)
 {
 	*errp = 0;
-	int fd = openat(dirfd, name, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+	/* O_NOFOLLOW: the entry was stat-confirmed a regular file, so it should never
+	 * be a symlink here; refuse to follow one swapped in after the check (TOCTOU). */
+	int fd = openat(dirfd, name, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW);
 	if (fd < 0) {
 		*errp = errno;
 		return 0;

@@ -8,8 +8,8 @@ binaries, `ferret` and `frt`.
 
 Early. The M0 scaffold builds and the harness is green; the predicate surface lands sprint by sprint
 (see `.docs/sprints/`). A golden suite checks output byte for byte against a locally built GNU find
-4.10.0, backed by a differential fuzzer, in CI on Ubuntu, macOS, FreeBSD, and musl/Alpine; the Linux
-job re-runs the suite under the io_uring stat backend so its output is held to the same parity.
+4.10.0 over a recorded case matrix, in CI on Ubuntu, macOS, FreeBSD, and musl/Alpine; the Linux job
+re-runs the suite under the io_uring stat backend so its output is held to the same parity.
 
 ## Build
 
