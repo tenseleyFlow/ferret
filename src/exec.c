@@ -171,8 +171,12 @@ static int run_argv(char **argv, int execdir, int dirfd, int close_stdin, struct
 	int status;
 	while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
 		;
-	/* find does NOT change its exit status for a non-zero (or unrunnable) child;
-	 * the predicate just evaluates false. Only find's own errors set exit 1. */
+	/* A signal-killed child gets a diagnostic (matching find), but — like find —
+	 * neither a signal nor a non-zero exit changes ferret's own exit status; the
+	 * predicate just evaluates false. Only ferret's own errors set exit 1. */
+	if (WIFSIGNALED(status))
+		fprintf(stderr, "ferret: '%s' terminated by signal %d\n", argv[0],
+			WTERMSIG(status));
 	return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
