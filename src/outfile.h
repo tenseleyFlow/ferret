@@ -9,9 +9,13 @@
 
 #include "dstr.h"
 
+#include <sys/types.h>
+
 struct outfile {
 	char *path;
 	int fd;
+	dev_t dev;     /* identity of the opened file: dedup by (dev,ino), like find */
+	ino_t ino;
 	struct dstr buf;
 	int write_err; /* errno of the first write failure, 0 if none */
 	struct outfile *next;

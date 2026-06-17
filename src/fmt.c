@@ -275,6 +275,9 @@ struct fmt *fmt_compile(const char *format, struct arena *a, const char **errmsg
 				continue;
 			}
 			case '\0':
+				/* trailing backslash: find warns at compile time, keeps the `\`. */
+				fprintf(stderr, "ferret: warning: escape `\\' followed by "
+						"nothing at all\n");
 				plain[plen++] = '\\';
 				continue;
 			default:

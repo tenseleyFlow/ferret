@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define OUT_FLUSH_THRESHOLD (256u * 1024u) /* matches the stdout buffer threshold */
@@ -36,7 +37,17 @@ struct outfile *frt_outfile_open(const char *path, struct outfile **list)
 {
 	for (struct outfile *o = *list; o; o = o->next)
 		if (strcmp(o->path, path) == 0)
-			return o; /* dedup: share one handle for repeated names */
+			return o; /* fast path: same spelling shares one handle */
+
+	/* find dedups -f* destinations by identity, not spelling (sharefile): two
+	 * different names for the same file must share ONE handle, or the second
+	 * open's O_TRUNC would wipe the first's output. Stat before opening so an
+	 * already-open file is reused (not re-truncated). */
+	struct stat st;
+	if (stat(path, &st) == 0)
+		for (struct outfile *o = *list; o; o = o->next)
+			if (o->dev == st.st_dev && o->ino == st.st_ino)
+				return o;
 
 	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
 	if (fd < 0)
@@ -44,6 +55,13 @@ struct outfile *frt_outfile_open(const char *path, struct outfile **list)
 	struct outfile *o = frt_xmalloc(sizeof *o);
 	o->path = frt_strdup(path);
 	o->fd = fd;
+	if (fstat(fd, &st) == 0) {
+		o->dev = st.st_dev;
+		o->ino = st.st_ino;
+	} else {
+		o->dev = 0;
+		o->ino = 0;
+	}
 	dstr_init(&o->buf);
 	o->write_err = 0;
 	o->next = *list;
