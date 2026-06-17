@@ -471,7 +471,23 @@ static void render_dir(const struct segment *s, struct entry *ent, struct evalct
 					saw = 0;
 				}
 			}
-			emit_spec_str(out, s->spec, path + base);
+			/* find (gnulib base_name) collapses trailing slashes to one:
+			 * "sub///" -> "sub/". Regular entries have none, so the common
+			 * path emits the suffix directly without copying. */
+			size_t end = base;
+			while (end < len && path[end] != '/')
+				end++;
+			if (end == len) {
+				emit_spec_str(out, s->spec, path + base);
+			} else {
+				size_t clen = end - base;
+				char *tmp = frt_xmalloc(clen + 2);
+				memcpy(tmp, path + base, clen);
+				tmp[clen] = '/';
+				tmp[clen + 1] = '\0';
+				emit_spec_str(out, s->spec, tmp);
+				free(tmp);
+			}
 		}
 		return;
 	}
