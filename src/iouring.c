@@ -106,6 +106,12 @@ void frt_iouring_statx_batch(struct frt_iouring *r, int dirfd, struct entry **en
 		} while (sub == -EINTR);
 		if (sub <= 0)
 			break; /* submit failed; eval_expr lazy-stats the rest, ring left clean */
+		/* INVARIANT: on this non-SQPOLL ring sized to FRT_URING_QD with chunk <= QD,
+		 * io_uring_submit transfers every prepared SQE in one call, so sub == prepped
+		 * always. The min() below is defensive only — a genuine short submit would
+		 * leave pending SQEs that alias bufs[] into the next chunk. If QD, SQPOLL, or
+		 * the chunk bound ever change so a partial submit becomes reachable, rework
+		 * this to a submit-until-drained loop before trusting the per-chunk buf index. */
 		size_t want = (size_t)sub < prepped ? (size_t)sub : prepped;
 
 		/* Reap exactly the completions we asked for. wait only `want` times so a
