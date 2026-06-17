@@ -31,16 +31,22 @@ jobs:
       - name: deep-tree walk (iterative + fd recycling)
         run: |
           d=$(mktemp -d)
-          ( cd "$d" && for i in $(seq 1 1500); do mkdir x && cd x || break; echo f > leaf; done )
+          # 600 deep: clears the fd window under ulimit -n 128 (exercises eviction +
+          # reopen) while staying under PATH_MAX (1024 on BSD/macOS) for reopen-by-path.
+          ( cd "$d" && for i in $(seq 1 600); do mkdir x && cd x || break; echo f > leaf; done )
           ref=tests/.work/ref/find-4.10.0
           # iterative walk: a deep tree must not SIGSEGV even on a small stack
           ( ulimit -s 256; ./ferret "$d" >/dev/null 2>&1 ) || { echo "FAIL: deep tree crashed under ulimit -s 256"; rm -rf "$d"; exit 1; }
-          # fd recycling: must not EMFILE under a low fd limit, and match find exactly
-          fc=$( ulimit -n 128; ./ferret "$d" -type d | wc -l | tr -d ' ' )
+          # fd recycling: must not EMFILE under a low fd limit; clean exit + match find
+          out=$( ulimit -n 128; ./ferret "$d" -type d 2>/tmp/e )
+          rc=$?
+          fc=$(printf '%s\n' "$out" | wc -l | tr -d ' ')
           gc=$( "$ref" "$d" -type d | wc -l | tr -d ' ' )
           rm -rf "$d"
+          [ "$rc" = 0 ] || { echo "FAIL: deep-tree exit $rc"; head -2 /tmp/e; exit 1; }
+          [ -s /tmp/e ] && { echo "FAIL: deep-tree wrote to stderr"; head -2 /tmp/e; exit 1; }
           [ "$fc" = "$gc" ] || { echo "FAIL: deep-tree dir count ferret=$fc != find=$gc"; exit 1; }
-          echo "deep-tree walk OK ($gc dirs, stack+fd bounded)"
+          echo "deep-tree walk OK ($gc dirs, stack+fd bounded, clean exit)"
       - name: io_uring parity (linux)
         if: runner.os == 'Linux'
         run: |
