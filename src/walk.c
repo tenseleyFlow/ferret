@@ -180,114 +180,27 @@ static int open_start_parent(struct arena *a, const char *root)
 	return fd >= 0 ? fd : AT_FDCWD;
 }
 
-static void walk_children(struct walkenv *we, struct frt_dir *d, int depth);
+/* ---- iterative DFS over an explicit frame stack ---------------------------
+ * Traversal keeps one frame per open directory on a heap stack rather than the
+ * C call stack, so a pathologically deep tree no longer overflows the stack
+ * (GNU find uses an iterative fts walker for the same reason). Output order,
+ * pre/post-order (-depth), -prune, -quit, -xdev, -maxdepth/-mindepth, -L loop
+ * detection, -execdir per-directory batch flushing, and the collect-then-release
+ * arena discipline are all preserved. */
+struct dirframe {
+	int dirfd;                 /* this directory's fd (fd-relative stat/descent) */
+	struct entry **ents;       /* collected entries (heap; freed on finalize) */
+	size_t n, idx;             /* entry count, next to process */
+	int depth;
+	int my_id;                 /* dir_seq id for -execdir batch grouping */
+	size_t dir_path_len;       /* path.len at this directory */
+	int anc_pushed;            /* -L: an ancestor was pushed for this dir */
+	struct arena_marker mark;  /* rewind point for this dir's allocations */
+	struct arena_marker emark; /* rewind point for the in-flight entry's scratch */
+	int awaiting;              /* resumed after descending into ents[idx]? */
+};
 
-/* Open `name` under `parent_fd` and walk its contents at `child_depth`. */
-static void descend_into(struct walkenv *we, int parent_fd, const char *name, int child_depth,
-			 struct entry *ent)
-{
-	struct frt_dir *child = NULL;
-	if (frt_diropen_at(parent_fd, name, &child) != 0) {
-		if (errno == ENOENT && we->opts->ignore_readdir_race)
-			return; /* entry vanished between readdir and open */
-		report_error(we, we->path.data, errno);
-		return;
-	}
-
-	int pushed = 0;
-	if (we->opts->follow == 1) {
-		const struct frt_statinfo *st = entry_stat(ent, &we->ctx);
-		if (st) {
-			anc_push(we, st->dev, st->ino, we->path.data);
-			pushed = 1;
-		}
-	}
-
-	walk_children(we, child, child_depth); /* consumes `child`: frees it, closes its fd */
-
-	if (pushed)
-		anc_pop(we);
-}
-
-/* Evaluate one entry (respecting -mindepth) and recurse if it is a descendable
- * directory (respecting pre/post order, -prune, -maxdepth, -xdev). */
-static void process_entry(struct walkenv *we, struct entry *ent, int dirfd, const char *name,
-			  int depth, int dir_id)
-{
-	const struct options *o = we->opts;
-	int isdir = entry_is_dir(we, ent);
-
-	/* -L: a symlink whose target can't be followed for a reason other than
-	 * "doesn't exist" is an error find reports and skips (ELOOP, ENOTDIR,
-	 * EACCES). entry_is_dir already triggered the follow-stat; a still-LNK type
-	 * with a recorded failure means the target stat failed. Only a genuinely
-	 * dangling link (ENOENT) is silently treated as the link itself. */
-	if (we->ctx.follow == 1 && ent->type == FRT_LNK &&
-	    (ent->flags & ENT_STAT_FAILED) && ent->stat_errno != ENOENT) {
-		report_error(we, we->path.data, ent->stat_errno);
-		return;
-	}
-
-	/* -L loop: a directory pointing back to an ancestor is reported and skipped
-	 * entirely (no eval, no descent) — matches fts FTS_DC handling. */
-	if (isdir) {
-		const char *anc = loop_ancestor(we, ent);
-		if (anc) {
-			report_loop(we, we->path.data, anc);
-			return;
-		}
-	}
-
-	if (o->depth_first) {
-		/* post-order: contents first, then the directory. -prune is a no-op. */
-		if (isdir && may_descend(we, ent, depth))
-			descend_into(we, dirfd, name, depth + 1, ent);
-		if (we->ctx.quit)
-			return;
-		if (depth >= o->mindepth) {
-			/* recursion left ctx->dirfd/dir_id pointing at the (now-closed)
-			 * child dir and may have realloc'd the path buffer; restore them
-			 * for the post-order evaluation of this entry. */
-			ent->path = we->path.data;
-			we->ctx.dirfd = dirfd;
-			we->ctx.dir_id = dir_id;
-			we->ctx.statname = ent->name;
-			we->ctx.prune = false;
-			(void)eval_expr(we->expr, ent, &we->ctx);
-		}
-	} else {
-		/* pre-order: the directory, then its contents. */
-		we->ctx.prune = false;
-		if (depth >= o->mindepth)
-			(void)eval_expr(we->expr, ent, &we->ctx);
-		if (we->ctx.quit)
-			return;
-		if (isdir && !we->ctx.prune && may_descend(we, ent, depth))
-			descend_into(we, dirfd, name, depth + 1, ent);
-	}
-}
-
-/* Push the entry's name onto the path buffer, evaluate (and recurse), pop. */
-static void process_one(struct walkenv *we, struct entry *ent, int dirfd, int depth, int my_id)
-{
-	size_t oldlen = we->path.len;
-	if (we->path.len == 0 || we->path.data[we->path.len - 1] != '/')
-		dstr_appendc(&we->path, '/');
-	size_t basepos = we->path.len;
-	dstr_append(&we->path, ent->name, ent->namelen);
-
-	ent->path = we->path.data;
-	ent->pathlen = (uint32_t)we->path.len;
-	ent->basepos = (uint32_t)basepos;
-
-	we->ctx.dirfd = dirfd;
-	we->ctx.dir_id = my_id;
-	we->ctx.statname = ent->name;
-
-	process_entry(we, ent, dirfd, ent->name, depth, my_id);
-
-	dstr_truncate(&we->path, oldlen);
-}
+static void walk_tree(struct walkenv *we, struct frt_dir *d, int depth);
 
 /* Pool job: worker k stats the survivor entry surv[k] into slots[k] (workers
  * touch disjoint indices; fstatat on a shared dir fd is stateless — no locking).
@@ -308,102 +221,262 @@ static void stat_worker(void *arg, size_t k)
 	frt_entry_fill_stat(j->ents[i], j->dirfd, j->ents[i]->name, j->follow, &j->slots[k]);
 }
 
-/* Read every entry of `d` into the arena, then DROP the directory's 64KB read
- * buffer (frt_dir_release) while keeping its fd for fd-relative descent, and
- * evaluate/recurse in readdir order. Collecting first (like find's savedir)
- * means a deep chain costs entries-on-path, not 64KB * depth — so deep trees no
- * longer balloon virtual memory. Consumes `d` (frees it; closes the fd on
- * return). When the pool is engaged (-P, stat-heavy, --ferret-threads) the batch
- * is stat'd in parallel first; output order is identical for any thread count. */
-static void walk_children(struct walkenv *we, struct frt_dir *d, int depth)
+/* Run the parallel stat backend (pool or io_uring) over a directory's entries,
+ * pre-filtered by the stat-free guard, warming ent->st for the survivors. No-op
+ * unless a backend is engaged. Output is identical to the lazy serial path. */
+static void run_stat_batch(struct walkenv *we, struct entry **ents, size_t n, int dirfd)
 {
-	int my_id = ++we->dir_seq; /* unique id for this directory instance */
-	struct arena_marker dirmark = arena_mark(&we->arena);
+	if (!((we->pool || we->uring) && we->needs_stat && we->ctx.follow == 0 && n > 0))
+		return;
+	/* Only entries passing the stat-free guard can match, so only they need a
+	 * stat. With no guard every entry survives. The guard reads the entry name
+	 * only — no path, no stat (so it never serializes the walker; guardable()). */
+	uint32_t *surv = arena_alloc(&we->arena, n * sizeof *surv);
+	size_t ns = 0;
+	if (we->nguard > 0) {
+		we->ctx.dirfd = dirfd;
+		for (size_t i = 0; i < n; i++) {
+			we->ctx.statname = ents[i]->name;
+			int pass = 1;
+			for (int g = 0; g < we->nguard && pass; g++)
+				pass = eval_expr(we->guard[g], ents[i], &we->ctx);
+			if (pass)
+				surv[ns++] = (uint32_t)i;
+		}
+	} else {
+		for (size_t i = 0; i < n; i++)
+			surv[i] = (uint32_t)i;
+		ns = n;
+	}
+	/* Batch-size floor: a tiny survivor set isn't worth backend dispatch — let
+	 * eval_expr stat those few lazily on this thread. */
+	if (ns >= FRT_POOL_BATCH_FLOOR) {
+		struct frt_statinfo *slots = arena_alloc(&we->arena, ns * sizeof *slots);
+		if (we->uring)
+			frt_iouring_statx_batch(we->uring, dirfd, ents, surv, ns, 0, slots);
+		else {
+			struct statjob job = {ents, slots, surv, dirfd, 0};
+			frt_pool_for(we->pool, ns, stat_worker, &job);
+		}
+	}
+}
 
+/* Collect d's entries into the arena, DROP its 64KB read buffer (keep the fd for
+ * fd-relative descent), run the stat batch, and push a frame. Consumes `d`.
+ * `anc_pushed` records whether the caller pushed a -L ancestor for this dir (the
+ * frame pops it on finalize). Returns 1 on success, 0 if the dir couldn't be
+ * read (reported + skipped). Collecting first (like find's savedir) keeps deep
+ * chains at entries-on-path, not 64KB * depth. */
+static int frame_open(struct walkenv *we, struct frt_dir *d, int depth, int anc_pushed,
+		      struct dirframe **frames, size_t *nf, size_t *cap)
+{
+	struct arena_marker mark = arena_mark(&we->arena);
+	int my_id = ++we->dir_seq;
 	struct entry **ents = NULL;
-	size_t cap = 0, n = 0;
+	size_t ecap = 0, n = 0;
 	struct frt_dirent de;
 	int r;
 	while ((r = frt_dirread(d, &de)) == 1) {
 		struct entry *ent = entry_new(&we->arena, de.name, de.namelen, de.type);
 		ent->depth = depth;
 		ent->ino = de.ino;
-		if (n == cap) {
-			cap = cap ? cap * 2 : 128;
-			ents = frt_xrealloc(ents, frt_size_mul(cap, sizeof *ents));
+		if (n == ecap) {
+			ecap = ecap ? ecap * 2 : 128;
+			ents = frt_xrealloc(ents, frt_size_mul(ecap, sizeof *ents));
 		}
 		ents[n++] = ent;
 	}
 	int read_err = (r < 0) ? errno : 0;
 
-	/* Drop the 64KB buffer now; keep the fd open for descent into children. */
-	int dirfd = frt_dir_release(d);
+	int dirfd = frt_dir_release(d); /* drop the read buffer; keep the fd open */
 	if (dirfd < 0) {
 		report_error(we, we->path.data, errno);
 		free(ents);
-		arena_rewind(&we->arena, dirmark);
-		return;
+		arena_rewind(&we->arena, mark);
+		if (anc_pushed)
+			anc_pop(we);
+		return 0;
 	}
 	if (read_err)
 		report_error(we, we->path.data, read_err);
 
-	if ((we->pool || we->uring) && we->needs_stat && we->ctx.follow == 0 && n > 0) {
-		/* Pre-filter: only entries passing the stat-free guard can match, so
-		 * only they need a stat. With no guard every entry survives (== the old
-		 * stat-all behavior). The guard reads the entry name only — no path, and
-		 * no stat (so it never serializes the walker; see guardable()). */
-		uint32_t *surv = arena_alloc(&we->arena, n * sizeof *surv);
-		size_t ns = 0;
-		if (we->nguard > 0) {
-			we->ctx.dirfd = dirfd;
-			for (size_t i = 0; i < n; i++) {
-				we->ctx.statname = ents[i]->name;
-				int pass = 1;
-				for (int g = 0; g < we->nguard && pass; g++)
-					pass = eval_expr(we->guard[g], ents[i], &we->ctx);
-				if (pass)
-					surv[ns++] = (uint32_t)i;
-			}
-		} else {
-			for (size_t i = 0; i < n; i++)
-				surv[i] = (uint32_t)i;
-			ns = n;
-		}
+	run_stat_batch(we, ents, n, dirfd);
 
-		/* Batch-size floor: a tiny survivor set isn't worth backend dispatch —
-		 * let eval_expr stat those few lazily on this thread. */
-		if (ns >= FRT_POOL_BATCH_FLOOR) {
-			struct frt_statinfo *slots = arena_alloc(&we->arena, ns * sizeof *slots);
-			if (we->uring)
-				frt_iouring_statx_batch(we->uring, dirfd, ents, surv, ns, 0, slots);
-			else {
-				struct statjob job = {ents, slots, surv, dirfd, 0};
-				frt_pool_for(we->pool, ns, stat_worker, &job);
-			}
-		}
-		for (size_t i = 0; i < n; i++) {
-			process_one(we, ents[i], dirfd, depth, my_id);
-			if (we->ctx.quit)
-				break;
-		}
-	} else {
-		/* Serial: per-entry arena rewind keeps scratch tight; the collected
-		 * entry list itself sits below the per-entry mark and survives. */
-		for (size_t i = 0; i < n; i++) {
-			struct arena_marker em = arena_mark(&we->arena);
-			process_one(we, ents[i], dirfd, depth, my_id);
-			arena_rewind(&we->arena, em);
-			if (we->ctx.quit)
-				break;
-		}
+	if (*nf == *cap) {
+		*cap = *cap ? *cap * 2 : 64;
+		*frames = frt_xrealloc(*frames, *cap * sizeof **frames);
 	}
-	free(ents);
+	struct dirframe *f = &(*frames)[(*nf)++];
+	f->dirfd = dirfd;
+	f->ents = ents;
+	f->n = n;
+	f->idx = 0;
+	f->depth = depth;
+	f->my_id = my_id;
+	f->dir_path_len = we->path.len;
+	f->anc_pushed = anc_pushed;
+	f->mark = mark;
+	f->awaiting = 0;
+	return 1;
+}
 
-	/* flush this directory's -execdir '+' batch before its fd closes. */
-	we->ctx.dirfd = dirfd;
-	frt_exec_flush_tree(we->expr, 1, my_id, &we->ctx);
-	close(dirfd);
-	arena_rewind(&we->arena, dirmark);
+/* Flush this directory's -execdir '+' batch, close its fd, drop its -L ancestor,
+ * restore the path to the directory level, and reclaim its arena allocations. */
+static void frame_finalize(struct walkenv *we, struct dirframe *f)
+{
+	we->ctx.dirfd = f->dirfd;
+	frt_exec_flush_tree(we->expr, 1, f->my_id, &we->ctx);
+	close(f->dirfd);
+	free(f->ents);
+	if (f->anc_pushed)
+		anc_pop(we);
+	dstr_truncate(&we->path, f->dir_path_len);
+	arena_rewind(&we->arena, f->mark);
+}
+
+/* Finish the in-flight entry of frame `f`: restore the path to the directory and
+ * reclaim the entry's scratch, then advance to the next entry. */
+static void frame_entry_done(struct walkenv *we, struct dirframe *f)
+{
+	dstr_truncate(&we->path, f->dir_path_len);
+	arena_rewind(&we->arena, f->emark);
+	f->idx++;
+}
+
+/* Iterative pre/post-order DFS from `d` (an opened directory at `depth`, whose
+ * own -L ancestor the caller manages). Consumes `d`. */
+static void walk_tree(struct walkenv *we, struct frt_dir *d, int depth)
+{
+	const struct options *o = we->opts;
+	struct dirframe *frames = NULL;
+	size_t nf = 0, cap = 0;
+
+	if (!frame_open(we, d, depth, 0, &frames, &nf, &cap)) {
+		free(frames);
+		return;
+	}
+
+	while (nf > 0) {
+		struct dirframe *f = &frames[nf - 1];
+		if (f->idx >= f->n) { /* directory exhausted */
+			frame_finalize(we, f);
+			nf--;
+			continue;
+		}
+		struct entry *ent = f->ents[f->idx];
+
+		if (f->awaiting) { /* resumed after the subtree of ents[idx] finished */
+			f->awaiting = 0;
+			if (o->depth_first && f->depth >= o->mindepth) {
+				/* post-order: eval the directory entry now (after its children).
+				 * the descent may have realloc'd the path buffer and moved ctx. */
+				ent->path = we->path.data;
+				we->ctx.dirfd = f->dirfd;
+				we->ctx.dir_id = f->my_id;
+				we->ctx.statname = ent->name;
+				we->ctx.prune = false;
+				(void)eval_expr(we->expr, ent, &we->ctx);
+			}
+			frame_entry_done(we, f);
+			if (we->ctx.quit)
+				break;
+			continue;
+		}
+
+		/* first visit to ents[idx]: append "/name" to the path, set ctx. */
+		f->emark = arena_mark(&we->arena);
+		if (we->path.len == 0 || we->path.data[we->path.len - 1] != '/')
+			dstr_appendc(&we->path, '/');
+		size_t basepos = we->path.len;
+		dstr_append(&we->path, ent->name, ent->namelen);
+		ent->path = we->path.data;
+		ent->pathlen = (uint32_t)we->path.len;
+		ent->basepos = (uint32_t)basepos;
+		we->ctx.dirfd = f->dirfd;
+		we->ctx.dir_id = f->my_id;
+		we->ctx.statname = ent->name;
+
+		int isdir = entry_is_dir(we, ent);
+
+		/* -L: a symlink whose target stat failed for a reason other than ENOENT
+		 * (ELOOP/ENOTDIR/EACCES) is reported and skipped. */
+		if (we->ctx.follow == 1 && ent->type == FRT_LNK &&
+		    (ent->flags & ENT_STAT_FAILED) && ent->stat_errno != ENOENT) {
+			report_error(we, we->path.data, ent->stat_errno);
+			frame_entry_done(we, f);
+			continue;
+		}
+		/* -L loop: a directory pointing back to an ancestor is reported and
+		 * skipped entirely (no eval, no descent) — matches fts FTS_DC. */
+		if (isdir) {
+			const char *anc = loop_ancestor(we, ent);
+			if (anc) {
+				report_loop(we, we->path.data, anc);
+				frame_entry_done(we, f);
+				continue;
+			}
+		}
+
+		int want_descend;
+		if (o->depth_first) {
+			/* post-order: descend first; the entry is eval'd on resume. */
+			want_descend = isdir && may_descend(we, ent, f->depth);
+		} else {
+			/* pre-order: eval the entry, then descend. */
+			we->ctx.prune = false;
+			if (f->depth >= o->mindepth)
+				(void)eval_expr(we->expr, ent, &we->ctx);
+			if (we->ctx.quit) {
+				frame_entry_done(we, f);
+				break;
+			}
+			want_descend = isdir && !we->ctx.prune && may_descend(we, ent, f->depth);
+		}
+
+		if (want_descend) {
+			struct frt_dir *child = NULL;
+			if (frt_diropen_at(f->dirfd, ent->name, &child) != 0) {
+				if (!(errno == ENOENT && o->ignore_readdir_race))
+					report_error(we, we->path.data, errno);
+				/* could not descend: in post-order, still eval the entry. */
+				if (o->depth_first && f->depth >= o->mindepth)
+					(void)eval_expr(we->expr, ent, &we->ctx);
+				frame_entry_done(we, f);
+				if (we->ctx.quit)
+					break;
+				continue;
+			}
+			int child_anc = 0;
+			if (we->ctx.follow == 1) {
+				const struct frt_statinfo *st = entry_stat(ent, &we->ctx);
+				if (st) {
+					anc_push(we, st->dev, st->ino, we->path.data);
+					child_anc = 1;
+				}
+			}
+			f->awaiting = 1; /* set before frame_open may realloc `frames` */
+			/* Push the child frame; on success it becomes the new top, on failure
+			 * the parent stays top (still awaiting) and resumes. Do NOT touch `f`
+			 * after this — the realloc may have moved the frame array. */
+			frame_open(we, child, f->depth + 1, child_anc, &frames, &nf, &cap);
+			continue;
+		}
+
+		/* leaf, or a post-order directory we won't descend: post-order evals here */
+		if (o->depth_first && f->depth >= o->mindepth)
+			(void)eval_expr(we->expr, ent, &we->ctx);
+		frame_entry_done(we, f);
+		if (we->ctx.quit)
+			break;
+	}
+
+	/* On -quit, finalize the remaining frames LIFO — flushing each directory's
+	 * -execdir batch and closing its fd — exactly as the recursive unwind did. */
+	while (nf > 0) {
+		frame_finalize(we, &frames[nf - 1]);
+		nf--;
+	}
+	free(frames);
 }
 
 int frt_walk(const char *root, const struct options *opts, const struct expr *expr,
@@ -494,7 +567,7 @@ int frt_walk(const char *root, const struct options *opts, const struct expr *ex
 			else {
 				if (opts->follow == 1)
 					anc_push(&we, si->dev, si->ino, root);
-				walk_children(&we, d, 1); /* consumes `d` */
+				walk_tree(&we, d, 1); /* consumes `d` */
 				if (opts->follow == 1)
 					anc_pop(&we);
 			}
@@ -518,7 +591,7 @@ int frt_walk(const char *root, const struct options *opts, const struct expr *ex
 			else {
 				if (opts->follow == 1)
 					anc_push(&we, si->dev, si->ino, root);
-				walk_children(&we, d, 1); /* consumes `d` */
+				walk_tree(&we, d, 1); /* consumes `d` */
 				if (opts->follow == 1)
 					anc_pop(&we);
 			}
