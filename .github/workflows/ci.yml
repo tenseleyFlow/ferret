@@ -47,6 +47,43 @@ jobs:
           [ -s /tmp/e ] && { echo "FAIL: deep-tree wrote to stderr"; head -3 /tmp/e; exit 1; }
           [ "$fc" = "$gc" ] || { echo "FAIL: deep-tree dir count ferret=$fc != find=$gc"; exit 1; }
           echo "deep-tree walk OK ($gc dirs, stack+fd bounded, clean exit)"
+      - name: fd-budget regression (tight ulimit + -execdir + -f*)
+        # Final-audit blockers B2/B3/B4: at a tight RLIMIT_NOFILE the walk must
+        # still complete and match find — for a plain walk (the fd_cap floor must
+        # not exceed the usable budget), for `-execdir ... ;` (which caches no fd,
+        # so eviction must stay on), and for many -f* output files (their fds must
+        # be debited from the budget). None of these were covered before.
+        run: |
+          ref=tests/.work/ref/find-4.10.0
+          d=$(mktemp -d); cur="$d"
+          for i in $(seq 1 50); do mkdir -p "$cur/x" || break; echo z >"$cur/f$i"; cur="$cur/x"; done
+          fail() { echo "FAIL: $1"; head -3 /tmp/e 2>/dev/null; rm -rf "$d" "$od"; exit 1; }
+          # B2: plain walk, fd_cap floor band (ulimit 20 was in the old EMFILE band;
+          # 16 is avoided — CI runners' inherited fds make it flaky). 32 is a sanity
+          # pass where the cap is positive and eviction engages without underflow.
+          for n in 20 32; do
+            rc=0; ( ulimit -n $n; ./ferret "$d" -type d >/tmp/o 2>/tmp/e ) || rc=$?
+            fc=$(wc -l </tmp/o|tr -d ' '); gc=$("$ref" "$d" -type d|wc -l|tr -d ' ')
+            [ "$rc" = 0 ] || fail "plain walk ulimit -n $n exit $rc"
+            [ -s /tmp/e ] && fail "plain walk ulimit -n $n wrote stderr"
+            [ "$fc" = "$gc" ] || fail "plain walk ulimit -n $n: ferret=$fc find=$gc"
+          done
+          # B3: -execdir ... ; under a tight budget (eviction must stay on)
+          rc=0; ( ulimit -n 32; ./ferret "$d" -type f -execdir printf '%s\n' {} ';' >/tmp/o 2>/tmp/e ) || rc=$?
+          fc=$(wc -l </tmp/o|tr -d ' '); gc=$("$ref" "$d" -type f -execdir printf '%s\n' {} ';' 2>/dev/null|wc -l|tr -d ' ')
+          [ "$rc" = 0 ] || fail "-execdir ; ulimit -n 32 exit $rc"
+          [ -s /tmp/e ] && fail "-execdir ; wrote stderr"
+          [ "$fc" = "$gc" ] || fail "-execdir ;: ferret=$fc find=$gc"
+          # B4: many -f* output files debited from the budget (all must be complete)
+          od=$(mktemp -d); fa=""
+          for i in $(seq 1 24); do fa="$fa -fprint $od/o$i"; done
+          rc=0; ( ulimit -n 64; ./ferret "$d" -type f $fa >/dev/null 2>/tmp/e ) || rc=$?
+          gc=$("$ref" "$d" -type f|wc -l|tr -d ' ')
+          [ "$rc" = 0 ] || fail "-f* x24 ulimit -n 64 exit $rc"
+          [ -s /tmp/e ] && fail "-f* x24 wrote stderr"
+          for i in $(seq 1 24); do c=$(wc -l <"$od/o$i" 2>/dev/null|tr -d ' '); [ "$c" = "$gc" ] || fail "-f* file o$i truncated: $c != $gc"; done
+          rm -rf "$d" "$od"
+          echo "fd-budget regression OK (plain/16-32, -execdir ;, 24x -f*; all match find, clean exit)"
       - name: io_uring parity (linux)
         if: runner.os == 'Linux'
         run: |
