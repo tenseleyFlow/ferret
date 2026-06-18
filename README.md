@@ -11,9 +11,11 @@ byte against a locally built GNU find 4.10.0 over a recorded case matrix, in the
 locales, in CI on Ubuntu, macOS, FreeBSD, and musl/Alpine. The Linux job re-runs the suite under the
 io_uring stat backend so its output is held to the same parity. ferret has had three adversarial
 audit passes; traversal is iterative with directory-fd recycling, so deep trees don't overflow the C
-stack or exhaust the fd table. A few predicates (`-used`, `-files0-from`, relative date strings in
-`-newerXt`, SELinux `%Z`/`-context`) and the `-O3`/`-O4` dataflow optimizations are deferred, and
-error or no-op rather than diverge silently.
+stack or exhaust the fd table. Known gaps: SELinux `%Z`/`-context` is unimplemented, and `-newerXt`/
+`-newermt` take a common subset of relative dates (erroring on gnulib's fuller grammar — weekday and
+month names, time-of-day). Both error rather than diverge silently. The `-O3`/`-O4` dataflow
+optimizations are not built, but output is identical at every `-O` level, so that affects speed
+only, not parity.
 
 ## Build
 
