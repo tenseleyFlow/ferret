@@ -6,10 +6,14 @@ binaries, `ferret` and `frt`.
 
 ## Status
 
-Early. The M0 scaffold builds and the harness is green; the predicate surface lands incrementally.
-A golden suite checks output byte for byte against a locally built GNU find
-4.10.0 over a recorded case matrix, in CI on Ubuntu, macOS, FreeBSD, and musl/Alpine; the Linux job
-re-runs the suite under the io_uring stat backend so its output is held to the same parity.
+v0.1.0-dev. The predicate and action surface is implemented; a golden suite checks output byte for
+byte against a locally built GNU find 4.10.0 over a recorded case matrix, in the C and C.UTF-8
+locales, in CI on Ubuntu, macOS, FreeBSD, and musl/Alpine. The Linux job re-runs the suite under the
+io_uring stat backend so its output is held to the same parity. ferret has had three adversarial
+audit passes; traversal is iterative with directory-fd recycling, so deep trees don't overflow the C
+stack or exhaust the fd table. A few predicates (`-used`, `-files0-from`, relative date strings in
+`-newerXt`, SELinux `%Z`/`-context`) and the `-O3`/`-O4` dataflow optimizations are deferred, and
+error or no-op rather than diverge silently.
 
 ## Build
 
