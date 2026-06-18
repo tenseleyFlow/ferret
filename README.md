@@ -6,8 +6,8 @@ binaries, `ferret` and `frt`.
 
 ## Status
 
-Early. The M0 scaffold builds and the harness is green; the predicate surface lands sprint by sprint
-(see `.docs/sprints/`). A golden suite checks output byte for byte against a locally built GNU find
+Early. The M0 scaffold builds and the harness is green; the predicate surface lands incrementally.
+A golden suite checks output byte for byte against a locally built GNU find
 4.10.0 over a recorded case matrix, in CI on Ubuntu, macOS, FreeBSD, and musl/Alpine; the Linux job
 re-runs the suite under the io_uring stat backend so its output is held to the same parity.
 
@@ -45,7 +45,7 @@ walk, or forced with `--ferret-threads N` — with identical output. `FRT_IO=uri
 stats through Linux io_uring (`statx`), falling back to the pool where io_uring is unavailable; the
 fill mirrors `fstatat` exactly, so output is unchanged. On the metadata workloads measured the pool is
 the faster backend (it spreads `statx` across cores; io_uring reaps on one thread), so io_uring stays
-an opt-in alternative rather than the default. Numbers land as the surface fills in (sprint 02+).
+an opt-in alternative rather than the default.
 
 ## Layout
 
@@ -54,7 +54,7 @@ src/        implementation (sys/ is the only platform-aware layer)
 tests/      unit/ harness + golden/ parity suite
 bench/      corpus generator, hyperfine runner, perf gate
 ci/         preflight script  (.github/workflows/ci.yml drives CI)
-.docs/      design, audits, sprints  (local)
+.docs/      design, audits  (local)
 ```
 
 ## License
