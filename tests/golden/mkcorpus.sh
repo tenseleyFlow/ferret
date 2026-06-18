@@ -43,6 +43,9 @@ touch -t 201506150000 "$dir/old2015.txt" 2>/dev/null || true
 : > "$dir/used_future.txt"
 touch -a -t 203501010000 "$dir/used_future.txt" 2>/dev/null || true
 
+# NUL-separated start-path list (for -files0-from parity)
+printf '%s\0%s\0' "$dir/alpha" "$dir/beta" > "$dir/files0.list"
+
 # symlinks: good (file), broken, dir, and a cycle to an ancestor (for -L loop tests)
 ln -s file.txt "$dir/good.link" 2>/dev/null || true
 ln -s nonexistent-target "$dir/broken.link" 2>/dev/null || true

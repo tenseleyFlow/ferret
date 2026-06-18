@@ -38,6 +38,8 @@ struct parse_result {
 	struct options opts;
 	struct outfile *outfiles; /* -f* destination files to flush at the end */
 	const char *error;     /* NULL on success; complete message body (no "ferret: " prefix) */
+	int exit_status;       /* nonzero => start with this exit code (e.g. -files0-from
+				* hit a zero-length/read error but parsing still succeeded) */
 };
 
 /* Parse argv (argv[0] = program name). Expr/paths allocated from `arena`.

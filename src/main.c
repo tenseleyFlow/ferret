@@ -115,7 +115,7 @@ int main(int argc, char **argv)
 
 	struct dstr out;
 	dstr_init(&out);
-	int exit_status = 0;
+	int exit_status = pr.exit_status; /* e.g. -files0-from saw a zero-length name */
 
 	for (int i = 0; i < pr.npaths; i++)
 		if (frt_walk(pr.paths[i], &pr.opts, pr.expr, pool, uring, needs_stat, &out, 1,

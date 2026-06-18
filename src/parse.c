@@ -6,6 +6,7 @@
 #include "fmt.h"
 #include "glob.h"
 #include "outfile.h"
+#include "util.h"
 #include "xregex.h"
 #include "sys/xstat.h"
 
@@ -47,6 +48,8 @@ struct pstate {
 	struct arena *arena;
 	struct options *opts;     /* positional options write here */
 	struct outfile **outfiles; /* -f* destination registry */
+	const char **files0_from; /* -files0-from FILE: set here, read after the parse */
+	const char *last_pred;    /* most recent predicate token (for the misplaced-path hint) */
 	const char *error;     /* set on failure: complete message body */
 	int paren_depth;       /* '(' nesting, capped to bound parser C-recursion */
 	bool has_action;       /* any action seen => suppress implicit -print */
@@ -739,6 +742,12 @@ static struct expr *parse_predicate(struct pstate *ps)
 	const char *name = cur(ps);
 	advance(ps);
 
+	/* Remember the predicate token so a following misplaced path can name it in
+	 * the hint (find's "possible unquoted pattern after predicate X?"). Only dash
+	 * tokens are predicates here; a non-dash token is the misplaced path itself. */
+	if (name && name[0] == '-')
+		ps->last_pred = name;
+
 	struct expr *e = new_node(ps, EXPR_LEAF);
 
 	if (strcmp(name, "-name") == 0 || strcmp(name, "-iname") == 0) {
@@ -1253,6 +1262,19 @@ static struct expr *parse_predicate(struct pstate *ps)
 			ps->opts->mindepth = v;
 		return mk_option_leaf(ps);
 	}
+	if (strcmp(name, "-files0-from") == 0) {
+		/* Global option (find: a GNU global option, parsed in the expression).
+		 * It records the file; frt_parse reads the start paths from it after the
+		 * parse so the path/expression grammar decides combine vs precede errors. */
+		const char *arg = cur(ps);
+		if (!arg) {
+			set_errorf(ps, "missing argument to `%s'", name);
+			return NULL;
+		}
+		advance(ps);
+		*ps->files0_from = arg;
+		return mk_option_leaf(ps);
+	}
 	if (strcmp(name, "-depth") == 0 || strcmp(name, "-d") == 0) {
 		ps->opts->depth_first = 1;
 		ps->opts->explicit_depth = 1;
@@ -1427,7 +1449,14 @@ static struct expr *parse_predicate(struct pstate *ps)
 	 * (find: "paths must precede expression"); reserve "unknown predicate" for
 	 * '-'-prefixed tokens. ( ) ! , are consumed by the parser before here. */
 	if (name[0] != '-') {
-		set_errorf(ps, "paths must precede expression: `%s'", name);
+		/* find adds a hint when the misplaced token names an existing file — it
+		 * was probably an unquoted pattern meant for the previous predicate. */
+		if (ps->last_pred && access(name, F_OK) == 0)
+			set_errorf(ps, "paths must precede expression: `%s'\nferret: possible "
+				       "unquoted pattern after predicate `%s'?",
+				   name, ps->last_pred);
+		else
+			set_errorf(ps, "paths must precede expression: `%s'", name);
 		return NULL;
 	}
 	set_errorf(ps, "unknown predicate `%s'", name);
@@ -1667,6 +1696,94 @@ static void scan_delete_prune(const struct expr *e, int *del, int *prune)
 	scan_delete_prune(e->rhs, del, prune);
 }
 
+/* Quote a filename for a diagnostic the way find's safely_quote_err_filename
+ * does (locale quotes). Returns an arena string. */
+static const char *files0_quote(struct arena *arena, const char *name)
+{
+	const char *oq = q_open(), *cq = q_close();
+	size_t n = strlen(oq) + strlen(name) + strlen(cq) + 1;
+	char *s = arena_alloc(arena, n);
+	snprintf(s, n, "%s%s%s", oq, name, cq);
+	return s;
+}
+
+/* Read NUL-separated start paths from `file` ("-" = stdin) into an arena array,
+ * mirroring find's -files0-from. Returns -1 on a fatal error (cannot open;
+ * out->error set), else 0. A zero-length name or a read error is reported and
+ * sets out->exit_status (non-fatal, like find — the valid paths still run). */
+static int read_files0(const char *file, struct arena *arena, struct parse_result *out,
+		       char ***paths, int *npaths)
+{
+	int is_stdin = strcmp(file, "-") == 0;
+	const char *qname = files0_quote(arena, is_stdin ? "(standard input)" : file);
+	FILE *f = is_stdin ? stdin : fopen(file, "r");
+	if (!f) {
+		int e = errno;
+		size_t n = strlen(qname) + strlen(strerror(e)) + 32;
+		char *m = arena_alloc(arena, n);
+		snprintf(m, n, "cannot open %s for reading: %s", qname, strerror(e));
+		out->error = m;
+		return -1;
+	}
+
+	size_t cap = 8192, len = 0;
+	char *buf = frt_xmalloc(cap);
+	size_t got;
+	while ((got = fread(buf + len, 1, cap - len, f)) > 0) {
+		len += got;
+		if (len == cap) {
+			cap = frt_size_mul(cap, 2);
+			buf = frt_xrealloc(buf, cap);
+		}
+	}
+	int read_errno = ferror(f) ? errno : 0;
+
+	/* Split on NUL. A record ends at a NUL or EOF; a trailing NUL does not
+	 * yield an empty final record, but an embedded "\0\0" does (diagnosed). */
+	size_t pcap = 16, pn = 0;
+	char **pv = frt_xmalloc(pcap * sizeof *pv);
+	size_t start = 0;
+	unsigned long recno = 0;
+	for (size_t p = 0; p <= len; p++) {
+		if (p < len && buf[p] != '\0')
+			continue;
+		if (p == len && p == start)
+			break; /* no record after the final NUL */
+		recno++;
+		size_t rl = p - start;
+		if (rl == 0) {
+			fprintf(stderr, "ferret: %s:%lu: invalid zero-length file name\n",
+				qname, recno);
+			out->exit_status = 1;
+		} else {
+			char *s = arena_alloc(arena, rl + 1);
+			memcpy(s, buf + start, rl);
+			s[rl] = '\0';
+			if (pn == pcap) {
+				pcap = frt_size_mul(pcap, 2);
+				pv = frt_xrealloc(pv, pcap * sizeof *pv);
+			}
+			pv[pn++] = s;
+		}
+		start = p + 1;
+	}
+	free(buf);
+	if (read_errno) {
+		fprintf(stderr, "ferret: %s: read error: %s\n", qname, strerror(read_errno));
+		out->exit_status = 1;
+	}
+	if (!is_stdin)
+		fclose(f);
+
+	char **arr = arena_alloc(arena, (pn ? pn : 1) * sizeof *arr);
+	for (size_t k = 0; k < pn; k++)
+		arr[k] = pv[k];
+	free(pv);
+	*paths = arr;
+	*npaths = (int)pn;
+	return 0;
+}
+
 int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *out)
 {
 	memset(out, 0, sizeof *out);
@@ -1677,6 +1794,7 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 	out->opts.threads = -1; /* auto: engage the stat pool only when structural (main.c) */
 
 	int i = 1;
+	const char *files0_from = NULL; /* -files0-from FILE (set while parsing the expression) */
 
 	/* leading global options (must precede paths; full set in sprint 03) */
 	while (i < argc) {
@@ -1798,6 +1916,11 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 		i++;
 	int npaths = i - path_start;
 
+	/* -files0-from (parsed below as an expression option) reads the start paths
+	 * from a file, so command-line paths default to none here; the file is read
+	 * after the expression parse so find's path/expression grammar still applies
+	 * (a path before it is the "combine" error; one after it is "paths must
+	 * precede expression"). */
 	if (npaths == 0) {
 		out->paths = arena_alloc(arena, sizeof(char *));
 		out->paths[0] = (char *)".";
@@ -1817,6 +1940,7 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 		.arena = arena,
 		.opts = &out->opts,
 		.outfiles = &out->outfiles,
+		.files0_from = &files0_from,
 		.error = NULL,
 		.has_action = false,
 		.full_days = 0,
@@ -1863,6 +1987,27 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 			     "If you want to carry on anyway, just explicitly use "
 			     "the -depth option.";
 		return -1;
+	}
+
+	/* -files0-from: gather start paths from the file (find does this after the
+	 * full parse). Command-line paths before it are the fatal "combine" error;
+	 * a path after it already failed above as "paths must precede expression". */
+	if (files0_from) {
+		if (npaths > 0) {
+			const char *q = files0_quote(arena, argv[path_start]);
+			size_t n = strlen(q) + 96;
+			char *m = arena_alloc(arena, n);
+			snprintf(m, n, "extra operand %s\nferret: file operands cannot be "
+				 "combined with -files0-from", q);
+			out->error = m;
+			return -1;
+		}
+		char **fp;
+		int fn;
+		if (read_files0(files0_from, arena, out, &fp, &fn) != 0)
+			return -1;
+		out->paths = fp;
+		out->npaths = fn; /* may be 0: walk nothing, no default "." */
 	}
 	return 0;
 }

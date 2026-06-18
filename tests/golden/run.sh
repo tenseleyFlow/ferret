@@ -120,6 +120,9 @@ CASES='
 %C -used +1
 %C -used -1
 %C -used +0
+-files0-from %C/files0.list -type f
+-files0-from %C/files0.list -print
+-files0-from %C/files0.list -name *.c
 %C -daystart -mtime +30
 %C -type f -exec %R {} ;
 %C -type f -exec %R {} +
