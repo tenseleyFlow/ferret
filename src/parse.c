@@ -602,9 +602,161 @@ static struct expr *build_used_pred(struct pstate *ps, struct expr *e, const cha
 	return e;
 }
 
+/* A relative-date unit: which tm field it adjusts and a day-count multiplier
+ * (week/fortnight fold onto tm_mday). Returns 1 if `w` names a unit. */
+static int reldate_unit(const char *w, int *field, long long *mult)
+{
+	static const struct {
+		const char *n;
+		int f;       /* 0=year 1=mon 2=mday 3=hour 4=min 5=sec */
+		long long m;
+	} u[] = {
+		{"sec", 5, 1}, {"secs", 5, 1}, {"second", 5, 1}, {"seconds", 5, 1},
+		{"min", 4, 1}, {"mins", 4, 1}, {"minute", 4, 1}, {"minutes", 4, 1},
+		{"hour", 3, 1}, {"hours", 3, 1},
+		{"day", 2, 1}, {"days", 2, 1},
+		{"week", 2, 7}, {"weeks", 2, 7},
+		{"fortnight", 2, 14}, {"fortnights", 2, 14},
+		{"month", 1, 1}, {"months", 1, 1},
+		{"year", 0, 1}, {"years", 0, 1},
+	};
+	for (size_t i = 0; i < sizeof u / sizeof u[0]; i++)
+		if (strcmp(w, u[i].n) == 0) {
+			*field = u[i].f;
+			*mult = u[i].m;
+			return 1;
+		}
+	return 0;
+}
+
+/* Common-subset of find's relative dates (gnulib parse_datetime is a full
+ * grammar; this covers the forms people actually type and errors on the rest):
+ *   now | today | yesterday | tomorrow
+ *   [now] [+|-] N UNIT ...        (bare = future)
+ *   N UNIT ... ago                (past)
+ * UNIT = sec/min/hour/day/week/fortnight/month/year (+plurals). Offsets are
+ * applied with calendar arithmetic (tm + mktime), so months/years and DST
+ * behave like find. `now` is the origin (find's start time). Returns 0/-1. */
+static int parse_reldate(const char *s, struct timespec now, long long *sec, long *nsec)
+{
+	long long off[6] = {0, 0, 0, 0, 0, 0}; /* year mon mday hour min sec */
+	int any = 0, have_num = 0, sign = 1;
+	long long num = 0;
+	/* "ago"/"hence" apply a factor to the IMMEDIATELY PRECEDING relunit only
+	 * (gnulib: `relunit tAGO`), so "3 days 2 hours ago" is +3d -2h, not -(3d+2h).
+	 * Track the last relunit's field and signed amount to negate just it. */
+	int last_field = -1;
+	long long last_amt = 0;
+	const char *p = s;
+
+	while (*p) {
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (!*p)
+			break;
+		unsigned char c = (unsigned char)*p;
+		if (c == '+' || c == '-') {
+			sign = (c == '-') ? -1 : 1;
+			p++;
+			continue;
+		}
+		if (isdigit(c)) {
+			char *end;
+			errno = 0;
+			num = strtoll(p, &end, 10);
+			if (errno == ERANGE)
+				return -1;
+			p = end;
+			have_num = 1;
+			continue;
+		}
+		if (isalpha(c)) {
+			char w[16];
+			size_t n = 0;
+			while (isalpha((unsigned char)*p)) {
+				if (n + 1 >= sizeof w)
+					return -1; /* longer than any known word */
+				w[n++] = (char)tolower((unsigned char)*p);
+				p++;
+			}
+			w[n] = '\0';
+			int field;
+			long long mult;
+			if (reldate_unit(w, &field, &mult)) {
+				if (!have_num)
+					return -1; /* unit with no count */
+				long long amt = sign * num * mult;
+				off[field] += amt;
+				last_field = field;
+				last_amt = amt;
+				have_num = 0;
+				sign = 1;
+				any = 1;
+			} else if (strcmp(w, "ago") == 0 || strcmp(w, "hence") == 0) {
+				/* "ago" negates the preceding relunit; "hence" leaves it (+1). */
+				if (last_field < 0)
+					return -1; /* nothing to apply it to */
+				if (strcmp(w, "ago") == 0)
+					off[last_field] -= 2 * last_amt;
+				last_field = -1;
+				any = 1;
+			} else if (strcmp(w, "now") == 0 || strcmp(w, "today") == 0) {
+				last_field = 2; /* origin; no offset, but "ago"-able harmlessly */
+				last_amt = 0;
+				any = 1;
+			} else if (strcmp(w, "yesterday") == 0) {
+				off[2] -= 1;
+				last_field = 2;
+				last_amt = -1;
+				any = 1;
+			} else if (strcmp(w, "tomorrow") == 0) {
+				off[2] += 1;
+				last_field = 2;
+				last_amt = 1;
+				any = 1;
+			} else {
+				return -1; /* weekday/month names etc. are out of subset */
+			}
+			continue;
+		}
+		return -1; /* unexpected character */
+	}
+	if (have_num || !any)
+		return -1; /* trailing count without a unit, or nothing meaningful */
+
+	/* No offset (plain now/today): use the origin verbatim (and keep its ns). */
+	int shifted = 0;
+	for (int k = 0; k < 6; k++)
+		shifted |= (off[k] != 0);
+	if (!shifted) {
+		*sec = now.tv_sec;
+		*nsec = now.tv_nsec;
+		return 0;
+	}
+
+	time_t base = (time_t)now.tv_sec;
+	struct tm tm;
+	if (!localtime_r(&base, &tm))
+		return -1;
+	tm.tm_year += (int)off[0];
+	tm.tm_mon += (int)off[1];
+	tm.tm_mday += (int)off[2];
+	tm.tm_hour += (int)off[3];
+	tm.tm_min += (int)off[4];
+	tm.tm_sec += (int)off[5];
+	tm.tm_isdst = -1;
+	time_t t = mktime(&tm);
+	if (t == (time_t)-1)
+		return -1;
+	*sec = t;
+	*nsec = 0; /* relative dates land on whole seconds */
+	return 0;
+}
+
 /* Parse a date for -newerXt / -newermt. Subset of find's parse_datetime:
- * @EPOCH, "YYYY-MM-DD[ HH:MM:SS]" in local time. Returns 0/-1. */
-static int parse_datetime_basic(const char *s, long long *sec, long *nsec)
+ * @EPOCH, "YYYY-MM-DD[ HH:MM:SS]" local time, and the relative forms above
+ * (relative to `now`). Returns 0/-1. */
+static int parse_datetime_basic(const char *s, struct timespec now, long long *sec, long *nsec)
 {
 	*nsec = 0;
 	if (s[0] == '@') {
@@ -624,7 +776,7 @@ static int parse_datetime_basic(const char *s, long long *sec, long *nsec)
 		tm.tm_isdst = -1;
 		r = strptime(s, "%Y-%m-%d", &tm);
 		if (!r || *r)
-			return -1;
+			return parse_reldate(s, now, sec, nsec); /* try the relative forms */
 	}
 	time_t t = mktime(&tm);
 	if (t == (time_t)-1)
@@ -1187,7 +1339,7 @@ static struct expr *parse_predicate(struct pstate *ps)
 		long long rsec;
 		long rnsec = 0;
 		if (Y == 't') {
-			if (parse_datetime_basic(arg, &rsec, &rnsec) != 0) {
+			if (parse_datetime_basic(arg, ps->start_time, &rsec, &rnsec) != 0) {
 				set_errorf(ps, "I cannot figure out how to interpret "
 					       "%s%s%s as a date or time",
 					   q_open(), arg, q_close());

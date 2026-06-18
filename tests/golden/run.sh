@@ -115,6 +115,10 @@ CASES='
 %C -anewer %C/old2015.txt
 %C -newermt 2018-06-15
 %C -newermt @1000000000
+%C -newermt yesterday
+%C -newermt now
+%C -newermt tomorrow
+%C -newermt today
 %C -newermm %C/old2020.txt
 %C -used 1
 %C -used +1
