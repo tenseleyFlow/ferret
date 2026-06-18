@@ -127,6 +127,8 @@ CASES='
 -files0-from %C/files0.list -type f
 -files0-from %C/files0.list -print
 -files0-from %C/files0.list -name *.c
+%C -context foo
+%C -context
 %C -daystart -mtime +30
 %C -type f -exec %R {} ;
 %C -type f -exec %R {} +

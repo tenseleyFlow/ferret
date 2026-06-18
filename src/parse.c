@@ -1414,6 +1414,19 @@ static struct expr *parse_predicate(struct pstate *ps)
 			ps->opts->mindepth = v;
 		return mk_option_leaf(ps);
 	}
+	if (strcmp(name, "-context") == 0) {
+		/* find always registers -context but makes it a fatal error when SELinux
+		 * isn't enabled. ferret doesn't implement SELinux matching, so it's never
+		 * enabled — match find's no-SELinux behavior exactly. (On a real
+		 * SELinux-enabled Linux host find would match contexts; see deviations.) */
+		const char *arg = cur(ps);
+		if (!arg) {
+			set_errorf(ps, "missing argument to `%s'", name);
+			return NULL;
+		}
+		set_errorf(ps, "invalid predicate -context: SELinux is not enabled.");
+		return NULL;
+	}
 	if (strcmp(name, "-files0-from") == 0) {
 		/* Global option (find: a GNU global option, parsed in the expression).
 		 * It records the file; frt_parse reads the start paths from it after the
