@@ -534,6 +534,71 @@ static struct expr *build_time_pred(struct pstate *ps, struct expr *e, int field
 	return e;
 }
 
+/* Build -used: file accessed N days after its status change. Unlike -atime, the
+ * reference is a pure delta (find's get_relative_timestamp with origin {0,0},
+ * no daystart and no -N end-of-day fudge); pred_time's TF_USED branch supplies
+ * the compared value (ctime-atime). */
+static struct expr *build_used_pred(struct pstate *ps, struct expr *e, const char *arg)
+{
+	if (!arg) {
+		set_errorf(ps, "missing argument to `-used'");
+		return NULL;
+	}
+	const char *p = arg;
+	int comp = COMP_EQ;
+	if (*p == '+') {
+		comp = COMP_GT;
+		p++;
+	} else if (*p == '-') {
+		comp = COMP_LT;
+		p++;
+	}
+	char *end;
+	double offset = strtod(p, &end);
+	if (end == p || *end != '\0') {
+		/* find's parse_used passes the raw arg to error() unquoted, unlike most
+		 * of its diagnostics — match that (no backtick quotes). */
+		set_errorf(ps, "Invalid argument %s to -used", arg);
+		return NULL;
+	}
+	if (offset != offset) { /* NaN: get_relative_timestamp's own message */
+		set_errorf(ps, "invalid not-a-number argument: `%s'", p);
+		return NULL;
+	}
+	int kind = comp == COMP_LT ? COMP_GT : comp == COMP_GT ? COMP_LT : COMP_EQ;
+
+	double total = offset * (double)DAYSECS;
+	long long rsec;
+	long rnsec = 0;
+	if (total >= 9.0e18) {
+		rsec = LLONG_MIN;
+	} else if (total <= -9.0e18) {
+		rsec = LLONG_MAX;
+	} else {
+		long long secs_d = (long long)total;
+		double frac = total - (double)secs_d;
+		long nanosec = (long)(frac * 1.0e9);
+		rsec = -secs_d; /* origin 0 */
+		rnsec = -nanosec;
+		if (rnsec < 0) {
+			rnsec += 1000000000L;
+			rsec -= 1;
+		}
+	}
+
+	e->pred = PRED_TIME;
+	e->eval = pred_time;
+	e->needs_stat = true;
+	e->u.time.kind = kind;
+	e->u.time.field = TF_USED;
+	e->u.time.ref_sec = rsec;
+	e->u.time.ref_nsec = rnsec;
+	e->u.time.window = DAYSECS;
+	e->cost = COST_STAT;
+	e->prob = 0.5f;
+	return e;
+}
+
 /* Parse a date for -newerXt / -newermt. Subset of find's parse_datetime:
  * @EPOCH, "YYYY-MM-DD[ HH:MM:SS]" in local time. Returns 0/-1. */
 static int parse_datetime_basic(const char *s, long long *sec, long *nsec)
@@ -1047,6 +1112,13 @@ static struct expr *parse_predicate(struct pstate *ps)
 		int field = name[1] == 'a' ? TF_ATIME : name[1] == 'c' ? TF_CTIME : TF_MTIME;
 		const char *arg = cur(ps);
 		struct expr *r = build_time_pred(ps, e, field, DAYSECS, name, arg);
+		if (r)
+			advance(ps);
+		return r;
+	}
+	if (strcmp(name, "-used") == 0) {
+		const char *arg = cur(ps);
+		struct expr *r = build_used_pred(ps, e, arg);
 		if (r)
 			advance(ps);
 		return r;

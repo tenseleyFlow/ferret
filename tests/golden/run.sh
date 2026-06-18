@@ -116,6 +116,10 @@ CASES='
 %C -newermt 2018-06-15
 %C -newermt @1000000000
 %C -newermm %C/old2020.txt
+%C -used 1
+%C -used +1
+%C -used -1
+%C -used +0
 %C -daystart -mtime +30
 %C -type f -exec %R {} ;
 %C -type f -exec %R {} +

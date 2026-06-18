@@ -46,7 +46,7 @@ enum pred_id {
 enum comp_kind { COMP_GT, COMP_LT, COMP_EQ };
 
 /* Which file timestamp a time predicate inspects. */
-enum time_field { TF_ATIME, TF_MTIME, TF_CTIME, TF_BTIME };
+enum time_field { TF_ATIME, TF_MTIME, TF_CTIME, TF_BTIME, TF_USED };
 
 /* -perm match modes. */
 enum perm_match { PERM_EXACT, PERM_ALL, PERM_ANY };

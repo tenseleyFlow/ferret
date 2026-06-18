@@ -37,6 +37,12 @@ chmod 0755 "$dir/alpha/sub/deep.c" 2>/dev/null || true
 touch -t 202001010000 "$dir/old2020.txt" 2>/dev/null || true
 touch -t 201506150000 "$dir/old2015.txt" 2>/dev/null || true
 
+# future atime, fresh ctime (for -used parity: atime-ctime > 0 -> a true outcome;
+# old2020/old2015 set atime in the past, so -used is false there). Far enough out
+# that atime stays after ctime for any plausible test date.
+: > "$dir/used_future.txt"
+touch -a -t 203501010000 "$dir/used_future.txt" 2>/dev/null || true
+
 # symlinks: good (file), broken, dir, and a cycle to an ancestor (for -L loop tests)
 ln -s file.txt "$dir/good.link" 2>/dev/null || true
 ln -s nonexistent-target "$dir/broken.link" 2>/dev/null || true

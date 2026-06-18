@@ -287,6 +287,19 @@ bool pred_time(const struct expr *e, struct entry *ent, struct evalctx *ctx)
 		fsec = st->btime;
 		fnsec = st->btime_ns;
 		break;
+	case TF_USED:
+		/* -used: false if accessed before its status change, else the time
+		 * compared is the delta ctime-atime (find's pred_used). reftime is a
+		 * pure delta (origin 0), so the same comparison below applies. */
+		if (ts_cmp(st->atime, st->atime_ns, st->ctime, st->ctime_ns) < 0)
+			return false;
+		fsec = (long long)st->ctime - (long long)st->atime;
+		fnsec = st->ctime_ns - st->atime_ns;
+		if (fnsec < 0) {
+			fnsec += 1000000000L;
+			fsec -= 1;
+		}
+		break;
 	default:       fsec = st->mtime; fnsec = st->mtime_ns; break;
 	}
 
