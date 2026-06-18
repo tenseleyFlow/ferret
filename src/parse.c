@@ -602,6 +602,40 @@ static struct expr *build_used_pred(struct pstate *ps, struct expr *e, const cha
 	return e;
 }
 
+/* English month name (full or abbreviation), 1..12, or 0. find/gnulib use their
+ * own English table regardless of locale, so we do too (not strptime %B). */
+static int month_name(const char *w)
+{
+	static const char *m[] = {"january", "february", "march", "april", "may",
+				  "june", "july", "august", "september", "october",
+				  "november", "december"};
+	size_t len = strlen(w);
+	for (int i = 0; i < 12; i++) {
+		if (strcmp(w, m[i]) == 0)
+			return i + 1;
+		if (len >= 3 && strncmp(w, m[i], 3) == 0 &&
+		    (len == 3 || strncmp(w, m[i], len) == 0))
+			return i + 1; /* unambiguous prefix (e.g. "sept", "mar") */
+	}
+	return 0;
+}
+
+/* English weekday name (full, abbreviation, or the few gnulib aliases), 0=Sun..
+ * 6=Sat, or -1. */
+static int weekday_name(const char *w)
+{
+	static const char *d[] = {"sunday", "monday", "tuesday", "wednesday",
+				  "thursday", "friday", "saturday"};
+	for (int i = 0; i < 7; i++)
+		if (strcmp(w, d[i]) == 0 || (strlen(w) == 3 && strncmp(w, d[i], 3) == 0))
+			return i;
+	if (strcmp(w, "tues") == 0)
+		return 2;
+	if (strcmp(w, "thur") == 0 || strcmp(w, "thurs") == 0)
+		return 4;
+	return -1;
+}
+
 /* A relative-date unit: which tm field it adjusts and a day-count multiplier
  * (week/fortnight fold onto tm_mday). Returns 1 if `w` names a unit. */
 static int reldate_unit(const char *w, int *field, long long *mult)
@@ -629,24 +663,34 @@ static int reldate_unit(const char *w, int *field, long long *mult)
 	return 0;
 }
 
-/* Common-subset of find's relative dates (gnulib parse_datetime is a full
- * grammar; this covers the forms people actually type and errors on the rest):
+/* Common-subset of find's parse_datetime (gnulib's is a full grammar; this
+ * covers the forms people actually type and errors on the rest, e.g. timezones,
+ * 2-digit years). All relative to `now` (find's start time). Returns 0/-1.
  *   now | today | yesterday | tomorrow
- *   [now] [+|-] N UNIT ...        (bare = future)
- *   N UNIT ... ago                (past)
- * UNIT = sec/min/hour/day/week/fortnight/month/year (+plurals). Offsets are
- * applied with calendar arithmetic (tm + mktime), so months/years and DST
- * behave like find. `now` is the origin (find's start time). Returns 0/-1. */
+ *   [now] [+|-] N UNIT ... [ago|hence]   UNIT = sec..year (+plurals, fortnight)
+ *   [next|last|this] WEEKDAY             (day-of-week, gnulib's ordinal formula)
+ *   [Month] D [,] [Year]  /  D Month [Year]   (month-name date; year optional)
+ *   HH:MM[:SS]                          (time of day)
+ * and combinations (e.g. "yesterday 10:00", "Mar 15 2020 14:30", "next fri 9:00").
+ */
 static int parse_reldate(const char *s, struct timespec now, long long *sec, long *nsec)
 {
-	long long off[6] = {0, 0, 0, 0, 0, 0}; /* year mon mday hour min sec */
+	long long off[6] = {0, 0, 0, 0, 0, 0}; /* relative: year mon mday hour min sec */
 	int any = 0, have_num = 0, sign = 1;
 	long long num = 0;
 	/* "ago"/"hence" apply a factor to the IMMEDIATELY PRECEDING relunit only
-	 * (gnulib: `relunit tAGO`), so "3 days 2 hours ago" is +3d -2h, not -(3d+2h).
-	 * Track the last relunit's field and signed amount to negate just it. */
+	 * (gnulib: `relunit tAGO`), so "3 days 2 hours ago" is +3d -2h. */
 	int last_field = -1;
 	long long last_amt = 0;
+	/* absolute components */
+	int abs_mon = 0;          /* 1..12 from a month name, else 0 */
+	long long freenum[4];     /* numbers not consumed by a unit (abs date day/year) */
+	int nfree = 0;
+	int have_time = 0, t_hour = 0, t_min = 0, t_sec = 0;
+	int have_wday = 0, wday_num = 0;
+	long long wday_ord = 0;   /* this/bare=0, next=+1, last=-1 */
+	int pend_ord = 0;         /* a next/last/this awaiting its weekday */
+	long long pend_ord_val = 0;
 	const char *p = s;
 
 	while (*p) {
@@ -663,11 +707,52 @@ static int parse_reldate(const char *s, struct timespec now, long long *sec, lon
 		if (isdigit(c)) {
 			char *end;
 			errno = 0;
-			num = strtoll(p, &end, 10);
+			long long v = strtoll(p, &end, 10);
 			if (errno == ERANGE)
 				return -1;
-			p = end;
+			if (*end == ':') { /* HH:MM[:SS] time of day */
+				if (have_time)
+					return -1;
+				if (have_num) { /* flush a pending free number (year) */
+					if (nfree >= 4)
+						return -1;
+					freenum[nfree++] = num;
+					have_num = 0;
+				}
+				long long mm, ss = 0;
+				p = end + 1;
+				if (!isdigit((unsigned char)*p))
+					return -1;
+				mm = strtoll(p, &end, 10);
+				p = end;
+				if (*p == ':') {
+					p++;
+					if (!isdigit((unsigned char)*p))
+						return -1;
+					ss = strtoll(p, &end, 10);
+					p = end;
+				}
+				if (v < 0 || v > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 60)
+					return -1;
+				t_hour = (int)v;
+				t_min = (int)mm;
+				t_sec = (int)ss;
+				have_time = 1;
+				any = 1;
+				continue;
+			}
+			if (have_num) { /* flush the previous free number (e.g. "15 2020") */
+				if (nfree >= 4)
+					return -1;
+				freenum[nfree++] = num;
+			}
+			num = v;
 			have_num = 1;
+			p = end;
+			/* find allows a comma only right after the day in "Month DD, YYYY";
+			 * a comma elsewhere is a parse error (e.g. "Mar 15 2020, 14:30"). */
+			if (*p == ',' && abs_mon && v >= 1 && v <= 31)
+				p++;
 			continue;
 		}
 		if (isalpha(c)) {
@@ -680,7 +765,7 @@ static int parse_reldate(const char *s, struct timespec now, long long *sec, lon
 				p++;
 			}
 			w[n] = '\0';
-			int field;
+			int field, mon, wd;
 			long long mult;
 			if (reldate_unit(w, &field, &mult)) {
 				if (!have_num)
@@ -693,15 +778,14 @@ static int parse_reldate(const char *s, struct timespec now, long long *sec, lon
 				sign = 1;
 				any = 1;
 			} else if (strcmp(w, "ago") == 0 || strcmp(w, "hence") == 0) {
-				/* "ago" negates the preceding relunit; "hence" leaves it (+1). */
 				if (last_field < 0)
-					return -1; /* nothing to apply it to */
+					return -1;
 				if (strcmp(w, "ago") == 0)
 					off[last_field] -= 2 * last_amt;
 				last_field = -1;
 				any = 1;
 			} else if (strcmp(w, "now") == 0 || strcmp(w, "today") == 0) {
-				last_field = 2; /* origin; no offset, but "ago"-able harmlessly */
+				last_field = 2;
 				last_amt = 0;
 				any = 1;
 			} else if (strcmp(w, "yesterday") == 0) {
@@ -714,30 +798,97 @@ static int parse_reldate(const char *s, struct timespec now, long long *sec, lon
 				last_field = 2;
 				last_amt = 1;
 				any = 1;
+			} else if (strcmp(w, "next") == 0 || strcmp(w, "last") == 0 ||
+				   strcmp(w, "this") == 0) {
+				if (pend_ord || have_num)
+					return -1;
+				pend_ord = 1;
+				pend_ord_val = (strcmp(w, "next") == 0) ? 1
+					       : (strcmp(w, "last") == 0) ? -1
+								          : 0;
+			} else if ((wd = weekday_name(w)) >= 0) {
+				if (have_wday || have_num)
+					return -1;
+				have_wday = 1;
+				wday_num = wd;
+				wday_ord = pend_ord ? pend_ord_val : 0;
+				pend_ord = 0;
+				any = 1;
+				if (*p == ',') /* find allows "Monday," (gnulib tDAY ',') */
+					p++;
+			} else if ((mon = month_name(w)) > 0) {
+				if (abs_mon || pend_ord)
+					return -1;
+				abs_mon = mon;
+				any = 1;
 			} else {
-				return -1; /* weekday/month names etc. are out of subset */
+				return -1; /* out of subset (timezone words, etc.) */
 			}
 			continue;
 		}
 		return -1; /* unexpected character */
 	}
-	if (have_num || !any)
-		return -1; /* trailing count without a unit, or nothing meaningful */
+	if (pend_ord)
+		return -1; /* next/last/this with no weekday */
+	if (have_num) { /* a trailing free number (abs-date day/year) */
+		if (nfree >= 4)
+			return -1;
+		freenum[nfree++] = num;
+		have_num = 0;
+	}
+	if (!any)
+		return -1;
 
-	/* No offset (plain now/today): use the origin verbatim (and keep its ns). */
-	int shifted = 0;
+	/* Plain now/today with nothing else: origin verbatim (keep sub-second). */
+	int has_abs = abs_mon || have_wday || have_time || nfree > 0;
+	int has_rel = 0;
 	for (int k = 0; k < 6; k++)
-		shifted |= (off[k] != 0);
-	if (!shifted) {
+		has_rel |= (off[k] != 0);
+	if (!has_abs && !has_rel) {
 		*sec = now.tv_sec;
 		*nsec = now.tv_nsec;
 		return 0;
+	}
+
+	/* A month-name date needs a day (1..31); a 4-digit free number is the year
+	 * (else the current year). Bare free numbers (no month name) are unsupported. */
+	int abs_year = 0, abs_mday = 0, have_date = 0;
+	if (abs_mon) {
+		for (int k = 0; k < nfree; k++) {
+			if (freenum[k] >= 1 && freenum[k] <= 31 && !abs_mday)
+				abs_mday = (int)freenum[k];
+			else if (freenum[k] >= 1000 && freenum[k] <= 9999 && !abs_year)
+				abs_year = (int)freenum[k];
+			else
+				return -1; /* unrecognized (2-digit year, >31 non-year, dup) */
+		}
+		if (!abs_mday)
+			return -1; /* month with no day */
+		have_date = 1;
+	} else if (nfree > 0) {
+		return -1; /* numbers with no month/unit anchor */
 	}
 
 	time_t base = (time_t)now.tv_sec;
 	struct tm tm;
 	if (!localtime_r(&base, &tm))
 		return -1;
+
+	/* Time of day: explicit time wins; an absolute date or weekday otherwise
+	 * resets to midnight; a purely relative spec keeps now's time of day. */
+	if (have_time) {
+		tm.tm_hour = t_hour;
+		tm.tm_min = t_min;
+		tm.tm_sec = t_sec;
+	} else if (have_date || have_wday) {
+		tm.tm_hour = tm.tm_min = tm.tm_sec = 0;
+	}
+	if (have_date) {
+		tm.tm_mon = abs_mon - 1;
+		tm.tm_mday = abs_mday;
+		if (abs_year)
+			tm.tm_year = abs_year - 1900;
+	}
 	tm.tm_year += (int)off[0];
 	tm.tm_mon += (int)off[1];
 	tm.tm_mday += (int)off[2];
@@ -745,11 +896,21 @@ static int parse_reldate(const char *s, struct timespec now, long long *sec, lon
 	tm.tm_min += (int)off[4];
 	tm.tm_sec += (int)off[5];
 	tm.tm_isdst = -1;
+
+	if (have_wday) {
+		if (mktime(&tm) == (time_t)-1) /* normalize to populate tm_wday */
+			return -1;
+		/* gnulib: dayincr = (ord - (ord>0 && wday!=target))*7 + (target-wday+7)%7 */
+		long long ord = wday_ord - ((wday_ord > 0 && tm.tm_wday != wday_num) ? 1 : 0);
+		tm.tm_mday += (int)(ord * 7 + ((wday_num - tm.tm_wday + 7) % 7));
+		tm.tm_isdst = -1;
+	}
+
 	time_t t = mktime(&tm);
 	if (t == (time_t)-1)
 		return -1;
 	*sec = t;
-	*nsec = 0; /* relative dates land on whole seconds */
+	*nsec = 0;
 	return 0;
 }
 

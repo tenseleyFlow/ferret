@@ -119,6 +119,8 @@ CASES='
 %C -newermt now
 %C -newermt tomorrow
 %C -newermt today
+%C -newermt monday
+%C -newermt friday
 %C -newermm %C/old2020.txt
 %C -used 1
 %C -used +1
