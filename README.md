@@ -11,16 +11,19 @@ byte against a locally built GNU find 4.10.0 over a recorded case matrix, in the
 locales, in CI on Ubuntu, macOS, FreeBSD, and musl/Alpine. The Linux job re-runs the suite under the
 io_uring stat backend so its output is held to the same parity. ferret has had three adversarial
 audit passes; traversal is iterative with directory-fd recycling, so deep trees don't overflow the C
-stack or exhaust the fd table. Known gaps: the `%Z` (SELinux context) `-printf` directive needs
-libselinux to match find, and `-newerXt`/`-newermt` parse a large subset of gnulib's date grammar
-(ISO, `@epoch`, relative offsets, month-name dates, weekdays, times) but not the long tail
-(timezone words, 2-digit years). Both error rather than diverge silently. The `-O3`/`-O4` dataflow
-optimizations are not built, but output is identical at every `-O` level, so that affects speed
-only, not parity.
+stack or exhaust the fd table. `-newerXt`/`-newermt` dates are parsed by the bespoke
+[frtdate](https://github.com/tenseleyFlow/frtdate) submodule (a from-scratch take on gnulib's date
+grammar, no gnulib): ISO, `@epoch`, relative offsets, month-name and numeric dates, weekdays, times,
+AM/PM, and timezone offsets. Known gaps: the `%Z` (SELinux context) `-printf` directive needs
+libselinux to match find, and the date grammar's long tail (named timezones like `EST`, 2-digit
+years in month-name dates, ordinal days of month) is unimplemented. Both error rather than diverge
+silently. The `-O3`/`-O4` dataflow optimizations are not built, but output is identical at every
+`-O` level, so that affects speed only, not parity.
 
 ## Build
 
 ```sh
+git clone --recurse-submodules https://github.com/tenseleyFlow/ferret   # frtdate lives in deps/
 ./configure        # probes the toolchain, writes config.h / config.mk
 make               # builds ./ferret and ./frt   (gmake on *BSD)
 make release       # -O3 -flto portable build
@@ -28,8 +31,10 @@ make debug         # ASan/UBSan build
 make install       # honors PREFIX / DESTDIR
 ```
 
-Needs a C11 compiler and GNU make (`gmake` on FreeBSD). No third-party dependencies; `liburing` is
-used if present.
+Needs a C11 compiler and GNU make (`gmake` on FreeBSD). No third-party dependencies; the date parser
+is the in-house [frtdate](https://github.com/tenseleyFlow/frtdate) submodule (`deps/frtdate`, libc
+only — already cloned, run `git submodule update --init` if you cloned without `--recurse-submodules`),
+and `liburing` is used if present.
 
 ## Test and benchmark
 
@@ -58,6 +63,7 @@ an opt-in alternative rather than the default.
 
 ```
 src/        implementation (sys/ is the only platform-aware layer)
+deps/       frtdate submodule (bespoke date parser, libc only)
 tests/      unit/ harness + golden/ parity suite
 bench/      corpus generator, hyperfine runner, perf gate
 ci/         preflight script  (.github/workflows/ci.yml drives CI)
