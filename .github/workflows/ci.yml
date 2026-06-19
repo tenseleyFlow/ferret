@@ -16,6 +16,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: toolchain
         run: cc --version; make --version | head -1
       - name: deps (linux)
@@ -26,6 +28,8 @@ jobs:
         run: brew install hyperfine || true
       - name: configure + build
         run: ./configure && make CFLAGS="-O2 -Werror"
+      - name: frtdate submodule unit tests
+        run: make -C deps/frtdate test CFLAGS="-O2 -Werror"
       - name: test
         run: make test
       - name: deep-tree walk (iterative + fd recycling)
@@ -124,6 +128,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: vmactions/freebsd-vm@v1
         with:
           prepare: pkg install -y gmake hyperfine || true
@@ -140,6 +146,8 @@ jobs:
       FRT_TEST_SANITIZE: "0"
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: configure + build
         run: ./configure && make CFLAGS="-O2 -Werror"

@@ -27,8 +27,13 @@ STD      = -std=c11
 # left ahead of -O3/-O0). CFLAGS stays free for user-appended flags.
 OPT     ?= -O2
 # _FILE_OFFSET_BITS=64 so off_t/ino_t column widths agree with find on 32-bit too.
-ALL_CFLAGS = $(STD) $(WARN) $(OPT) $(CFLAGS) $(CONF_CFLAGS) -Isrc -I. -D_FILE_OFFSET_BITS=64
+ALL_CFLAGS = $(STD) $(WARN) $(OPT) $(CFLAGS) $(CONF_CFLAGS) -Isrc -I. -Ideps/frtdate -D_FILE_OFFSET_BITS=64
 LDLIBS  += $(LDLIBS_OPT)
+
+# frtdate: bespoke date parser, vendored as a git submodule (deps/frtdate). It is
+# a dependency, not ferret source, so it stays out of SRC (and the SRC guard);
+# built with ferret's flags via the %.o rule and linked in.
+FRTDATE_OBJ = deps/frtdate/frtdate.o
 
 # Explicit source list — deterministic and faster to parse than $(wildcard), and
 # it makes a stray/abandoned .c in src/ a deliberate add, not a silent one.
@@ -68,8 +73,8 @@ all: config.h ferret frt
 config.h config.mk:
 	@./configure
 
-ferret: $(OBJ)
-	$(CC) $(ALL_CFLAGS) -o $@ $(OBJ) $(LDFLAGS) $(LDLIBS)
+ferret: $(OBJ) $(FRTDATE_OBJ)
+	$(CC) $(ALL_CFLAGS) -o $@ $(OBJ) $(FRTDATE_OBJ) $(LDFLAGS) $(LDLIBS)
 
 # frt is the same binary under a second name (behavior is identical to ferret).
 frt: ferret
@@ -117,7 +122,7 @@ uninstall:
 	rm -f $(BINDIR)/ferret $(BINDIR)/frt $(MANDIR)/ferret.1
 
 clean:
-	rm -f $(OBJ) $(DEP) ferret frt
+	rm -f $(OBJ) $(DEP) $(FRTDATE_OBJ) $(FRTDATE_OBJ:.o=.d) ferret frt
 	rm -f src/*.gcno src/*.gcda src/*.gcov src/sys/*.gcno src/sys/*.gcda *.gcov
 
 distclean: clean

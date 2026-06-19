@@ -23,10 +23,12 @@ LDLIBS_OPT=""
 san="-fsanitize=address,undefined -fno-sanitize-recover=all"
 [ "${FRT_TEST_SANITIZE:-1}" = 0 ] && san=""
 
-CFLAGS_T="-std=c11 -g -O1 $san $CONF_CFLAGS -Isrc -I. -D_FILE_OFFSET_BITS=64"
+CFLAGS_T="-std=c11 -g -O1 $san $CONF_CFLAGS -Isrc -I. -Ideps/frtdate -D_FILE_OFFSET_BITS=64"
 
-# Library sources = all src/*.c and src/sys/*.c except main.c (tests provide main).
+# Library sources = all src/*.c and src/sys/*.c except main.c (tests provide main),
+# plus the frtdate submodule (parse.c calls into it).
 libsrc=$(ls src/*.c src/sys/*.c 2>/dev/null | grep -v '/main\.c$' | tr '\n' ' ')
+libsrc="$libsrc deps/frtdate/frtdate.c"
 
 echo "== unit tests =="
 for t in tests/unit/*_test.c; do
