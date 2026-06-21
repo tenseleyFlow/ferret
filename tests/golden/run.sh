@@ -126,6 +126,7 @@ CASES='
 %C -newermt 2020-03-15T12:00:00
 %C -newermt 20200315
 %C -newermt 2020-03-15T06:00:00+05:00
+%C -newermt 2020-03-15T12:00:00N
 %C -newermm %C/old2020.txt
 %C -used 1
 %C -used +1
