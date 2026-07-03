@@ -6,19 +6,22 @@ binaries, `ferret` and `frt`.
 
 ## Status
 
-v0.1.0-dev. The predicate and action surface is implemented; a golden suite checks output byte for
-byte against a locally built GNU find 4.10.0 over a recorded case matrix, in the C and C.UTF-8
-locales, in CI on Ubuntu, macOS, FreeBSD, and musl/Alpine. The Linux job re-runs the suite under the
-io_uring stat backend so its output is held to the same parity. ferret has had three adversarial
-audit passes; traversal is iterative with directory-fd recycling, so deep trees don't overflow the C
-stack or exhaust the fd table. `-newerXt`/`-newermt` dates are parsed by the bespoke
-[frtdate](https://github.com/tenseleyFlow/frtdate) submodule (a from-scratch take on gnulib's date
-grammar, no gnulib): ISO, `@epoch`, relative offsets, month-name and numeric dates, weekdays, times,
-AM/PM, and timezone offsets. Known gaps: the `%Z` (SELinux context) `-printf` directive needs
-libselinux to match find, and the date grammar's long tail (named timezones like `EST`, 2-digit
-years in month-name dates, ordinal days of month) is unimplemented. Both error rather than diverge
-silently. The `-O3`/`-O4` dataflow optimizations are not built, but output is identical at every
-`-O` level, so that affects speed only, not parity.
+v0.1.0-dev. The predicate and action surface is complete. A golden suite checks ferret's output byte
+for byte against a locally built GNU find 4.10.0 over a recorded case matrix, in the C and C.UTF-8
+locales, on Ubuntu, macOS, FreeBSD, and musl/Alpine in CI. The Linux job re-runs the suite under the
+io_uring stat backend, held to the same parity.
+
+Traversal is iterative with directory-fd recycling, so deep trees don't overflow the C stack or
+exhaust the fd table, and ferret has been through three adversarial audit passes. `-newerXt` and
+`-newermt` dates are parsed by [frtdate](https://github.com/tenseleyFlow/frtdate), an in-house
+submodule that reimplements the common slice of gnulib's date grammar without gnulib: ISO, `@epoch`,
+relative offsets, month-name and numeric dates, weekdays, times, AM/PM, and timezone offsets.
+
+Known gaps: the `%Z` (SELinux context) `-printf` directive needs libselinux to match find, and the
+date grammar's long tail (named timezones like `EST`, 2-digit years in month-name dates, ordinal
+days of month) is unimplemented. Both error rather than diverge silently. The `-O3`/`-O4` dataflow
+optimizations are not built, but output is identical at every `-O` level, so that affects speed only,
+not parity.
 
 ## Build
 
@@ -63,7 +66,7 @@ an opt-in alternative rather than the default.
 
 ```
 src/        implementation (sys/ is the only platform-aware layer)
-deps/       frtdate submodule (bespoke date parser, libc only)
+deps/       frtdate submodule (date parser, libc only)
 tests/      unit/ harness + golden/ parity suite
 bench/      corpus generator, hyperfine runner, perf gate
 ci/         preflight script  (.github/workflows/ci.yml drives CI)
