@@ -20,6 +20,8 @@ MANDIR   = $(DESTDIR)$(PREFIX)/share/man/man1
 
 # The version string lives in src/version.h (single source of truth, used by
 # --version and packaging); do not duplicate it here.
+VERSION := $(shell sed -n 's/.*FRT_VERSION "\([^"]*\)".*/\1/p' src/version.h)
+DISTNAME = ferret-$(VERSION)
 
 WARN     = -Wall -Wextra -Wpedantic -Wstrict-prototypes -Wshadow -Wconversion -Wwrite-strings
 STD      = -std=c11
@@ -66,7 +68,7 @@ SRC = \
 OBJ = $(SRC:.c=.o)
 DEP = $(OBJ:.o=.d)
 
-.PHONY: all clean distclean install uninstall test bench fmt analyze release debug pgo coverage
+.PHONY: all clean distclean install uninstall test bench fmt analyze release debug pgo coverage dist
 
 all: config.h ferret frt
 
@@ -120,6 +122,17 @@ install: all
 
 uninstall:
 	rm -f $(BINDIR)/ferret $(BINDIR)/frt $(MANDIR)/ferret.1
+
+# Self-contained source tarball for packaging (AUR, Homebrew). Bundles the
+# frtdate submodule, which GitHub's generated archives leave out. Tracked files
+# only, from both repos; portable across GNU and BSD tar.
+dist:
+	@rm -rf "$(DISTNAME)" "$(DISTNAME).tar.gz"
+	@git archive --prefix="$(DISTNAME)/" HEAD | tar -x
+	@git -C deps/frtdate archive --prefix="$(DISTNAME)/deps/frtdate/" HEAD | tar -x
+	@tar -czf "$(DISTNAME).tar.gz" "$(DISTNAME)"
+	@rm -rf "$(DISTNAME)"
+	@echo "dist: $(DISTNAME).tar.gz"
 
 clean:
 	rm -f $(OBJ) $(DEP) $(FRTDATE_OBJ) $(FRTDATE_OBJ:.o=.d) ferret frt

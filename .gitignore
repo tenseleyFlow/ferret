@@ -10,6 +10,9 @@ CLAUDE.md
 config.mk
 config.h
 
+# release tarball (make dist)
+/ferret-*.tar.gz
+
 # test/bench scratch
 /tests/.work/
 /bench/.work/
