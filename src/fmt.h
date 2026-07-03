@@ -2,7 +2,7 @@
 #define FRT_FMT_H
 
 /*
- * -printf / -fprintf / -fls format interpreter (sprint 07). A format string is
+ * -printf / -fprintf / -fls format interpreter. A format string is
  * compiled once into a list of segments (literal text, \c stop, or a %directive
  * with its flags/width/precision and conversion). Rendering substitutes per
  * entry. Matches find's print.c: escapes, the directive table, ctime/strftime

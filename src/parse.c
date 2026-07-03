@@ -1782,7 +1782,7 @@ int frt_parse(int argc, char **argv, struct arena *arena, struct parse_result *o
 	int i = 1;
 	const char *files0_from = NULL; /* -files0-from FILE (set while parsing the expression) */
 
-	/* leading global options (must precede paths; full set in sprint 03) */
+	/* leading global options (must precede paths) */
 	while (i < argc) {
 		const char *a = argv[i];
 		if (strcmp(a, "-P") == 0) {

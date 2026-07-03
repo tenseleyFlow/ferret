@@ -36,8 +36,8 @@ sh tests/golden/mkcorpus.sh "$corpus" >/dev/null
 recorder="$root/tests/golden/recordargs.sh"
 chmod +x "$recorder" 2>/dev/null || true
 
-# Case matrix. %C expands to the corpus root. Cases grow per sprint (sprint 02+).
-# Sprint 02 surface: -name/-iname/-type/-empty/-print/-print0, operators, implicit print.
+# Case matrix. %C expands to the corpus root. Each case is one invocation
+# diffed byte-for-byte against the reference find.
 CASES='
 %C
 %C -print

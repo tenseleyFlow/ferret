@@ -2,7 +2,7 @@
 #define FRT_POOL_H
 
 /*
- * Minimal persistent worker pool for the parallel stat pass (sprint 10). The
+ * Minimal persistent worker pool for the parallel stat pass. The
  * only thing ferret parallelizes is per-entry fstatat() on a directory's
  * entries; output order is decided before any stat runs and concurrent fstatat
  * on a shared dir fd is stateless, so this changes timing only, never bytes.

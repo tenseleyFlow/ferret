@@ -2,7 +2,7 @@
 #define FRT_OPT_H
 
 /*
- * Expression optimizer (sprint 09). Reorders cheap/likely-to-short-circuit
+ * Expression optimizer. Reorders cheap/likely-to-short-circuit
  * predicates ahead of expensive ones to cut stat/exec work, and folds no-op
  * constants. Only side-effect-free (pure) predicates are reordered; actions and
  * control-flow predicates (-print, -exec, -delete, -prune, -quit) are pinned, so

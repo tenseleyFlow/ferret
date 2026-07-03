@@ -6,7 +6,7 @@
  * expression tree of tests (predicates) and actions joined by operators; the
  * evaluator walks it per discovered entry with short-circuit semantics
  * (overview §4). Leaves carry an eval function pointer + payload; the optimizer
- * (sprint 09) reads the cost/prob/pure metadata.
+ * reads the cost/prob/pure metadata.
  */
 
 #include "entry.h"

@@ -95,7 +95,7 @@ int main(void){ struct stat s; return (int)s.st_mtimespec.tv_nsec; }' '')
 fi
 
 # Birthtime: st_birthtim (FreeBSD) vs st_birthtimespec (macOS); Linux fstatat has
-# none (statx does — wired in sprint 10).
+# none (statx does).
 HAS_ST_BIRTHTIM=$(try_compile st_birthtim '
 #include <sys/stat.h>
 int main(void){ struct stat s; return (int)s.st_birthtim.tv_nsec; }' '')

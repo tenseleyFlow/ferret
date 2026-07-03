@@ -31,7 +31,7 @@ bool pred_access(const struct expr *e, struct entry *ent, struct evalctx *ctx);
  * and -newerXY. The reference timestamp/kind/window are precomputed by the parser. */
 bool pred_time(const struct expr *e, struct entry *ent, struct evalctx *ctx);
 
-/* Advanced matching (sprint 08). */
+/* Advanced matching. */
 bool pred_path(const struct expr *e, struct entry *ent, struct evalctx *ctx);   /* -path/-ipath */
 bool pred_lname(const struct expr *e, struct entry *ent, struct evalctx *ctx);  /* -lname/-ilname */
 bool pred_xtype(const struct expr *e, struct entry *ent, struct evalctx *ctx);  /* -xtype */

@@ -4,7 +4,7 @@
 /*
  * stat abstraction — the metadata path. Only called when a predicate needs
  * metadata or d_type was UNKNOWN (audit 03). frt_stat_at is the fstatat
- * baseline; the io_uring backend (iouring.c, sprint 10) issues statx batches.
+ * baseline; the io_uring backend (iouring.c) issues statx batches.
  */
 
 #include "sys/dir.h" /* enum frt_type */
