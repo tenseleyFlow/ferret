@@ -6,7 +6,7 @@ binaries, `ferret` and `frt`.
 
 ## Status
 
-v0.1.0-dev. The predicate and action surface is complete. A golden suite checks ferret's output byte
+v0.1.0. The predicate and action surface is complete. A golden suite checks ferret's output byte
 for byte against a locally built GNU find 4.10.0 over a recorded case matrix, in the C and C.UTF-8
 locales, on Ubuntu, macOS, FreeBSD, and musl/Alpine in CI. The Linux job re-runs the suite under the
 io_uring stat backend, held to the same parity.
