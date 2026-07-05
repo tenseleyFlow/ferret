@@ -44,7 +44,6 @@ if [ "$TAG" = "bfs" ]; then
 	exit 0
 fi
 
-TARBALL_URL="https://ftp.gnu.org/gnu/findutils/findutils-$TAG.tar.xz"
 bin="$OUT/find-$TAG"
 
 mkdir -p "$OUT"
@@ -57,13 +56,20 @@ else
 	srcdir="tests/.work/findutils-$TAG"
 	if [ ! -d "$srcdir/find" ]; then
 		tb="tests/.work/findutils-$TAG.tar.xz"
-		if command -v fetch >/dev/null 2>&1; then
-			fetch -o "$tb" "$TARBALL_URL"
-		elif command -v curl >/dev/null 2>&1; then
-			curl -sSL -o "$tb" "$TARBALL_URL"
-		else
-			wget -O "$tb" "$TARBALL_URL"
-		fi
+		# ftp.gnu.org connect-fails from CI runners now and then; try the geo
+		# mirror first and fall back. A partial download fails the tar extract.
+		for url in "https://ftpmirror.gnu.org/findutils/findutils-$TAG.tar.xz" \
+		           "https://ftp.gnu.org/gnu/findutils/findutils-$TAG.tar.xz"; do
+			rm -f "$tb"
+			if command -v fetch >/dev/null 2>&1; then
+				fetch -o "$tb" "$url" && break || true
+			elif command -v curl >/dev/null 2>&1; then
+				curl -fsSL -o "$tb" "$url" && break || true
+			else
+				wget -O "$tb" "$url" && break || true
+			fi
+		done
+		[ -s "$tb" ] || { echo "build-ref: could not fetch findutils $TAG" >&2; exit 1; }
 		( cd tests/.work && tar xf "findutils-$TAG.tar.xz" )
 	fi
 fi
