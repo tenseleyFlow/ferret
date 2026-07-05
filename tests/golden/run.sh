@@ -189,13 +189,54 @@ CASES='
 %C -type l -printf %p=%F\n
 '
 
+# Oracle-tagged cases (superset phase, sprint 12). Untagged CASES above are the
+# GNU surface — the invariant. These lists diff ferret against a DIFFERENT
+# reference when one exists on the box: BSD find (the system find on FreeBSD /
+# macOS) and bfs. Shared-surface cases for now; they prove the multi-oracle
+# plumbing before any superset feature lands. Absent oracles skip loudly.
+# bfs traverses breadth-first, so its cases compare sorted (set semantics).
+BSD_CASES='
+%C -type f -name *.c
+%C -type d
+%C -name sub -prune -o -type f -print
+'
+BFS_CASES='
+%C -type f -name *.c
+%C -type d
+'
+
 # The reference binary is named find-<tag>, so it self-reports that as its program
 # name in diagnostics; normalize it (and ferret / plain find) to PROG.
 refbase=$(basename "$ref")
 # find reports its program name as the full argv[0] it was invoked with (e.g.
 # "tests/.work/ref/find-4.10.0:"), not just the basename — normalize both, plus
 # ferret/find. '#' delimiter so the path's slashes need no escaping.
-normprog() { sed "s#^$ref: #PROG: #; s/^$refbase: /PROG: /; s/^ferret: /PROG: /; s/^find: /PROG: /"; }
+normprog() { sed "s#^$ref: #PROG: #; s/^$refbase: /PROG: /; s/^ferret: /PROG: /; s/^find: /PROG: /; s/^bfs: /PROG: /"; }
+
+# Resolve the superset oracles. Classify a find-like binary by --version: GNU
+# prints its package string, bfs its own name, BSD rejects long options.
+findkind() {
+	case "$("$1" --version 2>&1 | head -n 1)" in
+	*"GNU findutils"*) echo gnu ;;
+	bfs*) echo bfs ;;
+	*) echo bsd ;;
+	esac
+}
+FIND_BSD=${FIND_BSD:-}
+if [ -z "$FIND_BSD" ] && [ -x /usr/bin/find ] && [ "$(findkind /usr/bin/find)" = bsd ]; then
+	FIND_BSD=/usr/bin/find
+fi
+FIND_BFS=${FIND_BFS:-}
+if [ -z "$FIND_BFS" ]; then
+	# `find` itself can be bfs (some boxes symlink it); tests/.work/ref/bfs is
+	# what `build-ref.sh bfs` installs (Linux CI).
+	for c in "$(command -v bfs 2>/dev/null || true)" \
+	         "$(command -v find 2>/dev/null || true)" tests/.work/ref/bfs; do
+		[ -n "$c" ] && [ -x "$c" ] || continue
+		[ "$(findkind "$c")" = bfs ] && { FIND_BFS=$c; break; }
+	done
+fi
+export FIND_BSD FIND_BFS # matrix-check.sh reuses the resolution
 
 # %U/%G expand to the current uid/gid (deterministic per machine; both tools agree)
 me_uid=$(id -u)
@@ -230,6 +271,35 @@ phase() {
 			diff "$work/a.out" "$work/o.out" | head -8
 			diff "$work/a.errn" "$work/o.errn" | head -8
 			echo "$c" >>"$work/fails"
+		fi
+	done
+}
+
+# compare UUT vs an alternate oracle (BSD find / bfs) over a case list, C locale.
+# sorted=1 compares stdout as a set — bfs traverses breadth-first, so line order
+# is not comparable; membership and count are.
+phase_oracle() {
+	_orc=$1; _list=$2; _label=$3; _sorted=$4
+	printf '%s\n' "$_list" | while IFS= read -r c; do
+		[ -n "$c" ] || continue
+		LC_ALL=C run_case "$UUT" "$c"
+		cp "$work/o.out" "$work/a.out"; cp "$work/o.err" "$work/a.err"; cp "$work/o.rc" "$work/a.rc"
+		LC_ALL=C run_case "$_orc" "$c"
+		if [ "$_sorted" = 1 ]; then
+			sort "$work/a.out" >"$work/a.outc"; sort "$work/o.out" >"$work/o.outc"
+		else
+			cp "$work/a.out" "$work/a.outc"; cp "$work/o.out" "$work/o.outc"
+		fi
+		ok=1
+		cmp -s "$work/a.outc" "$work/o.outc" || ok=0
+		normprog <"$work/a.err" >"$work/a.errn"; normprog <"$work/o.err" >"$work/o.errn"
+		cmp -s "$work/a.errn" "$work/o.errn" || ok=0
+		[ "$(cat "$work/a.rc")" = "$(cat "$work/o.rc")" ] || ok=0
+		if [ "$ok" = 0 ]; then
+			echo "  DIFF [$_label]: $c (rc a=$(cat "$work/a.rc") o=$(cat "$work/o.rc"))"
+			diff "$work/a.outc" "$work/o.outc" | head -8
+			diff "$work/a.errn" "$work/o.errn" | head -4
+			echo "$_label" >>"$work/fails"
 		fi
 	done
 }
@@ -390,12 +460,24 @@ if [ -f tests/golden/PARITY_ACTIVE ] && [ -x "$UUT" ]; then
 	check_fstype
 	check_olevels
 	check_threads
+	# Superset oracles (sprint 12): prove the multi-oracle plumbing.
+	if [ -n "$FIND_BSD" ]; then
+		phase_oracle "$FIND_BSD" "$BSD_CASES" "bsd-oracle" 0
+	else
+		echo "GOLDEN: note — no BSD find on this box; @bsd oracle cases skipped"
+	fi
+	if [ -n "$FIND_BFS" ]; then
+		phase_oracle "$FIND_BFS" "$BFS_CASES" "bfs-oracle" 1
+	else
+		echo "GOLDEN: note — no bfs on this box; @bfs oracle cases skipped"
+	fi
+	sh tests/golden/matrix-check.sh "$UUT" "$ref" || echo "matrix" >>"$work/fails"
 	if [ -s "$work/fails" ]; then
 		n=$(wc -l <"$work/fails" | tr -d ' ')
 		echo "GOLDEN: parity FAILED ($n diffs vs find $REFTAG)"
 		exit 1
 	fi
-	echo "GOLDEN: ok (parity vs find $REFTAG, locales: $locales)"
+	echo "GOLDEN: ok (parity vs find $REFTAG; oracles: gnu${FIND_BSD:+ bsd}${FIND_BFS:+ bfs}; locales: $locales)"
 else
 	echo "GOLDEN: ok (self-test only; parity gate inactive — no PARITY_ACTIVE)"
 fi

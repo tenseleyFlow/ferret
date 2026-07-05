@@ -6,8 +6,45 @@
 set -eu
 
 TAG=${1:-4.10.0}
-TARBALL_URL="https://ftp.gnu.org/gnu/findutils/findutils-$TAG.tar.xz"
 OUT=tests/.work/ref
+
+# `build-ref.sh bfs [tag]` builds the bfs oracle instead (superset phase: the
+# @bfs golden cases and matrix-check diff against it). Linux CI builds it here;
+# macOS/FreeBSD install it via brew/pkg. The BSD-find oracle has no build target:
+# it is the system /usr/bin/find on FreeBSD/macOS (porting BSD find to Linux is
+# not a test dep).
+if [ "$TAG" = "bfs" ]; then
+	BTAG=${2:-4.1.1}
+	bin="$OUT/bfs"
+	mkdir -p "$OUT"
+	[ -x "$bin" ] && { echo "ref bfs present"; exit 0; }
+	srcdir="tests/.work/bfs-$BTAG"
+	if [ ! -d "$srcdir" ]; then
+		tb="tests/.work/bfs-$BTAG.tar.gz"
+		url="https://github.com/tavianator/bfs/archive/refs/tags/$BTAG.tar.gz"
+		if command -v fetch >/dev/null 2>&1; then fetch -o "$tb" "$url"
+		elif command -v curl >/dev/null 2>&1; then curl -sSL -o "$tb" "$url"
+		else wget -O "$tb" "$url"; fi
+		( cd tests/.work && tar xf "bfs-$BTAG.tar.gz" )
+	fi
+	( cd "$srcdir" \
+		&& { [ -f gen/config.mk ] || ./configure >/dev/null 2>&1; } \
+		&& { gmake -s -j4 >/dev/null 2>&1 || make -s -j4 >/dev/null 2>&1; } )
+	cp "$srcdir/bin/bfs" "$bin"
+	# A tarball build has no git metadata, so bfs stamps major.minor only
+	# (4.1.1 -> "bfs 4.1"). Accept the tag or a prefix of it.
+	got=$("$bin" --version 2>/dev/null | sed -n '1s/^bfs \([0-9.]*\).*/\1/p')
+	case "$BTAG" in
+	"$got" | "$got".*) : ;;
+	*)
+		echo "build-ref: $bin reports bfs '$got', expected '$BTAG' (refusing it)" >&2
+		rm -f "$bin"; exit 1 ;;
+	esac
+	echo "built ref bfs $BTAG -> $bin"
+	exit 0
+fi
+
+TARBALL_URL="https://ftp.gnu.org/gnu/findutils/findutils-$TAG.tar.xz"
 bin="$OUT/find-$TAG"
 
 mkdir -p "$OUT"
