@@ -25,9 +25,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y liburing-dev hyperfine
       - name: deps (macos)
         if: runner.os == 'macOS'
-        run: brew install hyperfine || true
+        run: brew install hyperfine bfs || true
       - name: configure + build
         run: ./configure && make CFLAGS="-O2 -Werror"
+      - name: bfs oracle (linux)
+        # Superset multi-oracle harness: golden run.sh diffs @bfs cases and the
+        # matrix-check bfs column against it. macOS gets bfs via brew above; the
+        # BSD-find oracle is the system /usr/bin/find on macOS/FreeBSD.
+        if: runner.os == 'Linux'
+        run: sh tests/golden/build-ref.sh bfs
       - name: frtdate submodule unit tests
         run: make -C deps/frtdate test CFLAGS="-O2 -Werror"
       - name: test
@@ -132,7 +138,7 @@ jobs:
           submodules: recursive
       - uses: vmactions/freebsd-vm@v1
         with:
-          prepare: pkg install -y gmake hyperfine || true
+          prepare: pkg install -y gmake hyperfine bfs || true
           run: |
             ./configure
             gmake CFLAGS="-O2 -Werror"
